@@ -1,0 +1,1176 @@
+#!/usr/bin/env python3
+"""gamecli — register and launch Windows games on Linux via Proton (umu-launcher),
+with Sunshine/Moonlight streaming integration.
+
+Parancsok:
+  gamecli add <name> <dir|exe|archive> [--exe file.exe] [--args "..."] [--no-sync]
+  gamecli add <name> --steam-appid <ID>          # game installed through Steam
+  gamecli run <slug>                            # this is what Sunshine calls
+  gamecli list
+  gamecli sync [--restart]                      # regenerate Sunshine apps.json
+  gamecli remove <slug> [--purge]
+
+Registry:  ~/.config/game-launcher/games/<slug>.json
+Prefixek:  ~/.local/share/game-prefixes/<slug>
+Logok:     ~/.cache/game-launcher/<slug>.log
+Games:      ~/Games (default target for archive extraction)
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HOME = Path.home()
+CONF_DIR = HOME / ".config/game-launcher"
+GAMES_DIR = CONF_DIR / "games"
+LOG_DIR = HOME / ".cache/game-launcher"
+SUNSHINE_APPS = HOME / ".config/sunshine/apps.json"
+
+
+def _load_settings() -> dict:
+    """~/.config/game-launcher/config.json: games_root, prefix_root, covers_root."""
+    s = {"games_root": str(HOME / "Games"),
+         "prefix_root": str(HOME / ".local/share/game-prefixes"),
+         "covers_root": str(HOME / ".local/share/gamecli/covers")}
+    f = CONF_DIR / "config.json"
+    if f.exists():
+        try:
+            s.update({k: v for k, v in json.loads(f.read_text()).items() if k in s})
+        except Exception:
+            pass
+    if os.environ.get("GAMECLI_GAMES_ROOT"):
+        s["games_root"] = os.environ["GAMECLI_GAMES_ROOT"]
+    if os.environ.get("GAMECLI_PREFIX_ROOT"):
+        s["prefix_root"] = os.environ["GAMECLI_PREFIX_ROOT"]
+    return s
+
+
+_SETTINGS = _load_settings()
+PREFIX_ROOT = Path(_SETTINGS["prefix_root"]).expanduser()
+DEFAULT_GAMES_ROOT = Path(_SETTINGS["games_root"]).expanduser()
+GAME_MARKER = "gamecli run"          # marks the Sunshine entries this tool owns
+SELF = str(Path(__file__).resolve())
+
+SKIP_EXE = re.compile(
+    r"(unins|setup|install|vcredist|dxsetup|dxwebsetup|dotnet|oalinst|"
+    r"crash|report|helper|launcher_updater|eula|redist|_setup)",
+    re.I,
+)
+
+
+def slugify(name: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return s or "game"
+
+
+def die(msg: str, code: int = 1):
+    print(f"HIBA: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def ensure_dirs():
+    for d in (CONF_DIR, GAMES_DIR, PREFIX_ROOT, LOG_DIR):
+        d.mkdir(parents=True, exist_ok=True)
+
+
+def registry_path(slug: str) -> Path:
+    return GAMES_DIR / f"{slug}.json"
+
+
+def load_game(slug: str) -> dict:
+    p = registry_path(slug)
+    if not p.exists():
+        die(f"no such registered game: {slug} (see: gamecli list)")
+    return json.loads(p.read_text())
+
+
+def all_games() -> list[dict]:
+    ensure_dirs()
+    out = []
+    for p in sorted(GAMES_DIR.glob("*.json")):
+        try:
+            out.append(json.loads(p.read_text()))
+        except Exception:
+            print(f"warning: malformed registry file: {p}", file=sys.stderr)
+    return out
+
+
+def find_exe(folder: Path) -> Path | None:
+    """Pick the most likely game executable inside a directory."""
+    folder = folder.resolve()
+    cands = [p for p in folder.rglob("*.exe") if p.is_file() and not SKIP_EXE.search(p.name)]
+    if not cands:
+        cands = [p for p in folder.rglob("*.exe") if p.is_file()]
+    if not cands:
+        return None
+    stem = folder.name.lower()
+
+    def score(p: Path):
+        name = p.stem.lower()
+        depth = len(p.relative_to(folder).parts)
+        return (name == stem, stem in name or name in stem, p.stat().st_size, -depth)
+
+    return max(cands, key=score)
+
+
+def extract_archive(archive: Path, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    suffix = archive.suffix.lower()
+    if suffix in {".7z", ".zip", ".rar", ".tar", ".gz", ".xz", ".bz2"}:
+        tool = shutil.which("7z") or shutil.which("7zz") or shutil.which("bsdtar")
+        if not tool:
+            die("no 7z/bsdtar available for extraction (install p7zip)")
+        print(f"extracting: {archive.name} -> {dest}")
+        cmd = [tool, "x", "-y", f"-o{dest}", str(archive)] if "7z" in tool else [tool, "-xf", str(archive), "-C", str(dest)]
+        subprocess.run(cmd, check=True)
+    else:
+        die(f"unsupported archive: {archive.name}")
+
+
+def looks_like_installer(path: Path) -> bool:
+    name = path.name.lower()
+    return name.startswith("setup") or "setup_" in name or name.startswith("install")
+
+
+
+def is_repack(src: Path) -> bool:
+    """FitGirl/DODI style repack: setup.exe + fg-*.bin (must be run, not extracted)."""
+    if not src.is_dir():
+        return False
+    if list(src.glob("fg-*.bin")) or list(src.glob("fg-*.bin.*")):
+        return True
+    if "repack" in src.name.lower() and any(src.glob("*.bin")):
+        return True
+    return False
+
+
+
+def extract_inno(installer: Path, dest: Path) -> None:
+    """Extract an Inno Setup / GOG offline installer — deliberately not run under Wine."""
+    tool = shutil.which("innoextract")
+    if not tool:
+        die("nincs innoextract (sudo pacman -S innoextract)")
+    if not dest.exists() and not os.access(dest.parent, os.W_OK):
+        die(f"no write permission for {dest.parent} — sudo mkdir -p {dest.parent} && sudo chown $USER:$USER {dest.parent}")
+    dest.mkdir(parents=True, exist_ok=True)
+    print(f"extracting Inno/GOG installer: {installer.name} -> {dest}")
+    subprocess.run([tool, "-e", "-d", str(dest), str(installer)], check=True)
+
+
+def sunshine_restart_if_idle() -> None:
+    # Never interrupt an active stream — just report it.
+    try:
+        tcp = subprocess.run(["ss", "-Htn", "state", "established"],
+                             capture_output=True, text=True, timeout=5).stdout
+        udp = subprocess.run(["ss", "-Hun"], capture_output=True, text=True, timeout=5).stdout
+        ports_tcp = (":47984", ":48010", ":47989")
+        ports_udp = (":47998", ":47999", ":48000")
+        busy = any(p in line for line in tcp.splitlines() for p in ports_tcp)
+        busy = busy or any(p in line for line in udp.splitlines() for p in ports_udp)
+    except Exception:
+        busy = False
+    if busy:
+        print("  (STREAM ACTIVE — not restarting Sunshine, that would kill the running game.)")
+        print("  The change applies on the next Sunshine start; or end the stream and run:")
+        print("  gamecli sync --restart")
+        return
+    unit = "app-dev.lizardbyte.app.Sunshine.service"
+    # rapid successive restarts trip systemd's start-limit — reset-failed + short pause
+    stamp = LOG_DIR / ".last-sunshine-restart"
+    try:
+        last = float(stamp.read_text().strip())
+    except Exception:
+        last = 0.0
+    wait = 8.0 - (time.time() - last)
+    if 0 < wait < 8:
+        time.sleep(wait)
+    subprocess.run(["systemctl", "--user", "reset-failed", unit], capture_output=True)
+    r = subprocess.run(["systemctl", "--user", "restart", unit], capture_output=True)
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(str(time.time()))
+    except Exception:
+        pass
+    if r.returncode != 0:
+        print(f"  WARNING: Sunshine restart failed: {r.stderr.decode().strip()[:120]}")
+        print(f"  manually: systemctl --user reset-failed {unit} && systemctl --user start {unit}")
+        return
+    print("  Sunshine restarted (new app entry loaded)")
+
+
+def sync_sunshine(restart: bool = False) -> None:
+    games = [g for g in all_games() if g.get("sunshine", True)]
+    apps = {"env": {"PATH": "$(PATH):$(HOME)/.local/bin"}, "apps": []}
+    if SUNSHINE_APPS.exists():
+        try:
+            existing = json.loads(SUNSHINE_APPS.read_text())
+            apps["env"] = existing.get("env", apps["env"])
+            apps["apps"] = [
+                a for a in existing.get("apps", [])
+                if not any(GAME_MARKER in str(x) for x in (a.get("detached", []) + [c.get("do", "") for c in a.get("prep-cmd", [])]))
+            ]
+        except Exception as e:
+            die(f"cannot read existing apps.json ({e}) — refusing to overwrite")
+    for g in games:
+        apps["apps"].append({
+            "name": g["name"],
+            "detached": [f"setsid {SELF} run {g['slug']}"],
+            # restores the display mode when the stream ends (client quit / game exit)
+            "prep-cmd": [{"do": "true", "undo": f"{SELF} restoreres"}],
+            "image-path": g.get("image", "steam.png"),
+        })
+    SUNSHINE_APPS.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SUNSHINE_APPS.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(apps, indent=2, ensure_ascii=False) + "\n")
+    tmp.replace(SUNSHINE_APPS)
+    print(f"Sunshine apps.json updated: {len(games)} game entries")
+    for g in games:
+        print(f"  - {g['name']}")
+    if restart:
+        sunshine_restart_if_idle()
+
+
+
+STEAM_IMG = ("https://cdn.cloudflare.steamstatic.com/steam/apps/{appid}/{name}.jpg")
+
+
+
+def steam_art(appid: str, tmp: Path) -> Path | None:
+    """Download Steam cover art (library -> header -> appdetails header_image)."""
+    for n in ("library_600x900", "header", "capsule_616x353"):
+        f = tmp.with_suffix(".jpg")
+        r = subprocess.run(["curl", "-fsSL", "-o", str(f), STEAM_IMG.format(appid=appid, name=n)],
+                           capture_output=True)
+        if r.returncode == 0 and f.exists() and f.stat().st_size > 5000:
+            return f
+    try:
+        raw = subprocess.run(["curl", "-fsS", "--max-time", "20",
+                              f"https://store.steampowered.com/api/appdetails?appids={appid}&l=english"],
+                             capture_output=True, text=True, timeout=30).stdout
+        url = (json.loads(raw).get(str(appid), {}).get("data") or {}).get("header_image") or ""
+        if url:
+            f = tmp.with_suffix(".jpg")
+            r = subprocess.run(["curl", "-fsSL", "-o", str(f), url], capture_output=True)
+            if r.returncode == 0 and f.exists() and f.stat().st_size > 5000:
+                return f
+    except Exception:
+        pass
+    return None
+
+
+
+
+def sgdb_key() -> str:
+    """SteamGridDB API key (~/.api_keys: SGDB_API_KEY=... or environment variable)."""
+    k = os.environ.get("SGDB_API_KEY", "").strip()
+    if k:
+        return k
+    f = HOME / ".api_keys"
+    if f.exists():
+        for line in f.read_text(errors="ignore").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                if line.startswith("export "):
+                    line = line[len("export "):].strip()
+                name, val = line.split("=", 1)
+                if name.strip().upper() in {"SGDB_API_KEY", "STEAMGRIDDB_API_KEY", "SGDB"}:
+                    return val.strip().strip("\"'")
+    return ""
+
+
+def sgdb_art(name: str, appid: str, tmp: Path) -> Path | None:
+    """Portrait (600x900) cover art from SteamGridDB, when an API key is configured."""
+    key = sgdb_key()
+    if not key:
+        return None
+    try:
+        import urllib.parse
+        q = urllib.parse.quote(name)
+        r = subprocess.run(["curl", "-fsS", "--max-time", "20", "-H", f"Authorization: Bearer {key}",
+                            f"https://www.steamgriddb.com/api/v2/search/autocomplete/{q}"],
+                           capture_output=True, text=True, timeout=30)
+        data = json.loads(r.stdout)
+        items = (data.get("data") or [])
+        if not items:
+            return None
+        gid = items[0]["id"]
+        r2 = subprocess.run(["curl", "-fsS", "--max-time", "20", "-H", f"Authorization: Bearer {key}",
+                             f"https://www.steamgriddb.com/api/v2/grids/game/{gid}?dimensions=600x900&types=static"],
+                            capture_output=True, text=True, timeout=30)
+        grids = json.loads(r2.stdout).get("data") or []
+        if not grids:
+            return None
+        url = grids[0].get("url") or ""
+        if not url:
+            return None
+        f = tmp.with_suffix(".sgdb.png")
+        r3 = subprocess.run(["curl", "-fsSL", "-o", str(f), url], capture_output=True)
+        if r3.returncode == 0 and f.exists() and f.stat().st_size > 5000:
+            print(f"SteamGridDB cover: {items[0].get('name')} (grid {gid})")
+            return f
+    except Exception as e:
+        print(f"  (SteamGridDB unavailable: {e})")
+    return None
+
+
+
+def cmd_icon(args) -> None:
+    """Set a game icon/cover (the tile shown by Sunshine/Moonlight)."""
+    g = load_game(args.slug)
+    img_dir = Path(_SETTINGS.get("covers_root") or (DEFAULT_GAMES_ROOT.parent / ".covers")).expanduser()
+    img_dir.mkdir(parents=True, exist_ok=True)
+    dest = img_dir / f"{g['slug']}.png"
+    tmp = Path("/tmp") / f"icon-{g['slug']}"
+    src = None
+    if args.file:
+        src = Path(args.file).expanduser()
+        if not src.exists():
+            die(f"no such file: {src}")
+    elif args.url:
+        src = tmp.with_suffix(".img")
+        subprocess.run(["curl", "-fsSL", "-o", str(src), args.url], check=True)
+    elif args.steam_appid:
+        appid = str(args.steam_appid)
+        src = steam_art(appid, tmp)
+        if not src:
+            die(f"could not download cover art for AppID {appid}")
+    else:
+        # no explicit source: search the Steam store by game name
+        appid = str(g.get("steam_appid") or "")
+        if not appid:
+            import urllib.parse
+            q = urllib.parse.quote(g["name"])
+            try:
+                raw = subprocess.run(["curl", "-fsS", "--max-time", "20",
+                                      f"https://store.steampowered.com/api/storesearch/?term={q}&l=english&cc=US"],
+                                     capture_output=True, text=True, timeout=30).stdout
+                items = json.loads(raw).get("items", [])
+            except Exception:
+                items = []
+            if not items:
+                die(f"not found on Steam: {g['name']} — pass --file/--url/--steam-appid instead")
+            exact = [i for i in items if i["name"].strip().lower() == g["name"].strip().lower()]
+            pick = (exact or items)[0]
+            appid = str(pick["id"])
+            print(f"Steam match: {pick['name']} (AppID {appid})")
+        args.steam_appid = appid
+        src = steam_art(appid, tmp)
+        if not src:
+            die(f"could not download cover art for AppID {appid}")
+    # when a SteamGridDB key exists, prefer its portrait (600x900) covers
+    if getattr(args, "sgdb", False) and not sgdb_key():
+        print("  (no SGDB_API_KEY in ~/.api_keys — falling back to Steam cover art)")
+    sg = sgdb_art(g["name"], str(args.steam_appid or g.get("steam_appid") or ""), tmp) if not args.file else None
+    if sg:
+        src = sg
+
+    # normalise to a 600x900 PNG (Moonlight tile): crop portrait, blur-pad landscape
+    wh = subprocess.run(["magick", "identify", "-format", "%w %h", str(src)],
+                        capture_output=True, text=True).stdout.split()
+    try:
+        iw, ih = int(wh[0]), int(wh[1])
+    except Exception:
+        iw, ih = 0, 0
+    if iw and ih and (ih / iw) >= 1.15:
+        # already portrait (box art): fill + centre crop
+        subprocess.run(["magick", str(src), "-resize", "600x900^", "-gravity", "center",
+                        "-extent", "600x900", str(dest)], check=True)
+    else:
+        # landscape (header/capsule): blurred backdrop + untouched, centred artwork
+        subprocess.run([
+            "magick",
+            "(", str(src), "-resize", "600x900^", "-gravity", "center", "-extent", "600x900",
+            "-blur", "0x28", "-modulate", "85,90", ")",
+            "(", str(src), "-resize", "600x840", "-background", "none", "-gravity", "center",
+            "-extent", "600x900", ")",
+            "-gravity", "center", "-composite", str(dest)
+        ], check=True)
+    g["image"] = str(dest)  # absolute path required: Sunshine resolves relative names in its assets dir
+    registry_path(g["slug"]).write_text(json.dumps(g, indent=2, ensure_ascii=False) + "\n")
+    print(f"icon set: {dest} ({dest.stat().st_size // 1024} KB)")
+    sync_sunshine(restart=True)
+
+
+def cmd_add(args) -> None:
+    ensure_dirs()
+    name = args.name
+    slug = args.slug or slugify(name)
+    entry = {
+        "name": name,
+        "slug": slug,
+        "type": "steam" if args.steam_appid else "proton",
+        "args": args.args or "",
+        "sunshine": True,
+        "image": args.image or "steam.png",
+        "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    if args.steam_appid:
+        entry["steam_appid"] = str(args.steam_appid)
+        print(f"Steam game registered: {name} (AppID {args.steam_appid})")
+    else:
+        if not args.path:
+            die("pass a directory/file, or use the --steam-appid option")
+        src = Path(args.path).expanduser()
+        if not src.exists():
+            die(f"no such file/directory: {src}")
+        if src.is_file() and src.suffix.lower() in {".7z", ".zip", ".rar", ".tar", ".gz", ".xz", ".bz2"}:
+            dest = Path(args.dest or (DEFAULT_GAMES_ROOT / name))
+            extract_archive(src, dest)
+            src = dest
+        # Scene ISO (installer release): mount it, the installer is a separate step
+        if src.is_file() and src.suffix.lower() == ".iso":
+            mnt = mount_iso(src, slug)
+            entry["iso"] = str(src)
+            entry["iso_mount"] = str(mnt)
+            setup = find_installer(mnt)
+            crack = find_crack_dir(mnt)
+            if crack:
+                entry["crack_dir"] = str(crack)
+            if setup:
+                entry["installer"] = str(setup)
+                registry_path(slug).write_text(json.dumps(entry, indent=2, ensure_ascii=False) + "\n")
+                print(f"Scene ISO felcsatolva: {mnt}")
+                print(f"  installer: {setup.name}")
+                if crack:
+                    print(f"  crack:    {crack.name}")
+                print(f"\nNext step:  gamecli install {slug}")
+                print("  (the installer runs under Proton; its GUI appears on the desktop / in the stream)")
+                if not args.no_sync:
+                    sync_sunshine(restart=True)
+                return
+            # no installer found: maybe the ISO already contains a ready-to-run game
+            src = mnt
+
+        # FitGirl/DODI repack: a setup.exe-t Proton alatt KELL futtatni (nem csomagoljuk ki)
+        if src.is_dir() and is_repack(src):
+            setup = next((p for p in sorted(src.glob("*.exe")) if looks_like_installer(p)), None) or (src / "setup.exe")
+            entry["installer"] = str(setup)
+            entry["prefix"] = str(PREFIX_ROOT / slug)
+            registry_path(slug).write_text(json.dumps(entry, indent=2, ensure_ascii=False) + "\n")
+            print(f"Repack felismerve: {src}")
+            print(f"  installer: {setup.name}  (+ {len(list(src.glob('*.bin')))} .bin files)")
+            print(f"\nNext step:  gamecli install {slug}")
+            print("  (the installer runs under Proton; its GUI appears on the desktop / in the stream;")
+            print("   for 60+ GB this can take 1-2 hours)")
+            if not args.no_sync:
+                sync_sunshine(restart=True)
+            return
+
+        # Inno/GOG offline installer (setup*.exe + .bin) — extract it, do not run it
+        inst = None
+        if src.is_dir():
+            inst = next((p for p in sorted(src.glob("*.exe")) if looks_like_installer(p)), None)
+            if inst and not any(src.glob("*.bin")):
+                inst = None
+        elif src.is_file() and src.suffix.lower() == ".exe" and looks_like_installer(src):
+            inst = src
+        if inst is not None:
+            dest = Path(args.dest or (DEFAULT_GAMES_ROOT / name))
+            extract_inno(inst, dest)
+            src = dest
+
+        if src.is_file() and src.suffix.lower() == ".exe":
+            exe = src.resolve()
+        else:
+            exe = None
+            if args.exe:
+                exe = (src / args.exe).resolve()
+                if not exe.exists():
+                    die(f"the given exe does not exist: {exe}")
+            else:
+                exe = find_exe(src)
+                if not exe:
+                    die(f"no .exe found in: {src}")
+        entry["path"] = str(exe)
+        entry["prefix"] = str(Path(args.prefix).expanduser() if args.prefix else PREFIX_ROOT / slug)
+        if args.proton:
+            entry["protonpath"] = args.proton
+        print(f"Proton game registered: {name}")
+        print(f"  exe:    {entry['path']}")
+        print(f"  prefix: {entry['prefix']}")
+
+    registry_path(slug).write_text(json.dumps(entry, indent=2, ensure_ascii=False) + "\n")
+    if not args.no_sync:
+        sync_sunshine(restart=True)
+
+
+
+# ---------- follow the client resolution (Sunshine -> Hyprland) ----------
+
+def _hypr_sig() -> str | None:
+    """Live Hyprland instance signature (Sunshine's env copy is not always current)."""
+    sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    if sig:
+        return sig
+    base = Path(f"/run/user/{os.getuid()}/hypr")
+    if not base.is_dir():
+        return None
+    dirs = sorted(base.iterdir(), key=lambda d: d.stat().st_mtime, reverse=True)
+    for d in dirs:
+        env = os.environ.copy()
+        env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        env["HYPRLAND_INSTANCE_SIGNATURE"] = d.name
+        r = subprocess.run(["hyprctl", "monitors", "-j"], capture_output=True, text=True, env=env)
+        if r.stdout.strip().startswith("["):
+            return d.name
+    return None
+
+
+def _hypr_env() -> dict:
+    env = os.environ.copy()
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    sig = _hypr_sig()
+    if sig:
+        env["HYPRLAND_INSTANCE_SIGNATURE"] = sig
+    return env
+
+
+def _hyprctl_json(cmd: list[str]):
+    env = _hypr_env()
+    r = subprocess.run(["hyprctl"] + cmd + ["-j"], capture_output=True, text=True, env=env)
+    try:
+        return json.loads(r.stdout)
+    except Exception:
+        return None
+
+
+def _fmt_refresh(rate: float) -> str:
+    return f"{rate:.1f}" if abs(rate - round(rate)) > 0.01 else str(int(round(rate)))
+
+
+def set_monitor_mode(width: int, height: int, fps: float | None = None) -> tuple[str, str] | None:
+    """Switch the first monitor to the requested mode; returns (output, original_mode)."""
+    mons = _hyprctl_json(["monitors"])
+    if not isinstance(mons, list) or not mons:
+        return None
+    m = mons[0]
+    name = m.get("name")
+    cur_w, cur_h = int(m.get("width", 0)), int(m.get("height", 0))
+    cur_rate = float(m.get("refreshRate", 60) or 60)
+    original = f"{cur_w}x{cur_h}@{_fmt_refresh(cur_rate)}"
+    if cur_w <= width and cur_h <= height:
+        return None  # nothing to switch
+    rate = fps or cur_rate
+    # pick the closest available refresh rate for the requested resolution
+    modes = m.get("availableModes") or []
+    want = f"{width}x{height}"
+    cands = [x for x in modes if x.startswith(want + "@")]
+    if cands:
+        avail = [float(x.split("@")[1].rstrip("Hz")) for x in cands]
+        rate = min(avail, key=lambda r: (abs(r - float(fps or cur_rate)), -r))
+    mode = f"{width}x{height}@{_fmt_refresh(rate)}"
+    scale = m.get("scale", 1)
+    expr = f'hl.monitor({{ output = "{name}", mode = "{mode}", position = "0x0", scale = {scale} }})'
+    r = subprocess.run(["hyprctl", "eval", expr], capture_output=True, text=True, env=_hypr_env())
+    print(f"display: {name} {original} -> {mode} ({r.stdout.strip()})")
+    return (name, original)
+
+
+def restore_monitor_mode(saved: tuple[str, str] | None) -> None:
+    if not saved:
+        return
+    name, mode = saved
+    expr = f'hl.monitor({{ output = "{name}", mode = "{mode}", position = "0x0", scale = 1.0 }})'
+    subprocess.run(["hyprctl", "eval", expr], capture_output=True, text=True, env=_hypr_env())
+    print(f"display restored: {name} {mode}")
+
+STATE_FILE = LOG_DIR / "display-restore"
+
+
+def cmd_setres(args) -> None:
+    """Prep-cmd helper: switch the monitor to the resolution Sunshine's client asked for."""
+    w = int(os.environ.get("SUNSHINE_CLIENT_WIDTH") or 0)
+    h = int(os.environ.get("SUNSHINE_CLIENT_HEIGHT") or 0)
+    f = float(os.environ.get("SUNSHINE_CLIENT_FPS") or 0) or None
+    if not (w and h):
+        print("no SUNSHINE_CLIENT_WIDTH/HEIGHT — nothing to switch")
+        return
+    saved = set_monitor_mode(w, h, f)
+    if saved:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(f"{saved[0]}\n{saved[1]}\n")
+
+
+def cmd_restoreres(args) -> None:
+    """Prep-cmd helper: restore the original display mode."""
+    if not STATE_FILE.exists():
+        return
+    name, mode = STATE_FILE.read_text().split("\n")[:2]
+    restore_monitor_mode((name, mode))
+    STATE_FILE.unlink(missing_ok=True)
+
+
+
+# ---------- scene ISOs / installer releases ----------
+
+CRACK_GROUPS = ("razor1911", "razor", "codex", "plaza", "skidrow", "fairlight", "hoodlum",
+                "reloaded", "empress", "tenoke", "goldberg", "rune", "elamigos", "dodi", "fitgirl")
+INSTALLER_NAMES = ("setup.exe", "install.exe", "setup32.exe", "setup64.exe")
+
+
+def mount_iso(iso: Path, slug: str) -> Path:
+    """Loop-mount egy ISO-t stabil helyre (/mnt/scene/<slug>)."""
+    mnt = Path("/mnt/scene") / slug
+    subprocess.run(["sudo", "-n", "mkdir", "-p", str(mnt)], check=True)
+    if subprocess.run(["mountpoint", "-q", str(mnt)]).returncode != 0:
+        print(f"mounting ISO: {iso.name} -> {mnt}")
+        subprocess.run(["sudo", "-n", "mount", "-o", "loop,ro", str(iso), str(mnt)], check=True)
+    return mnt
+
+
+def find_installer(root: Path) -> Path | None:
+    for name in INSTALLER_NAMES:
+        for p in root.rglob(name):
+            if p.is_file():
+                return p
+    cands = [p for p in root.rglob("*.exe") if p.is_file() and looks_like_installer(p)]
+    return cands[0] if cands else None
+
+
+def find_crack_dir(root: Path) -> Path | None:
+    """Crack directory: known group name, or just .dll+.exe without large data files."""
+    for d in [x for x in root.iterdir() if x.is_dir()]:
+        low = d.name.lower()
+        if any(g in low for g in CRACK_GROUPS):
+            return d
+    for d in [x for x in root.iterdir() if x.is_dir()]:
+        files = [f for f in d.rglob("*") if f.is_file()]
+        if not files:
+            continue
+        small = all(f.stat().st_size < 64 * 1024 * 1024 for f in files)
+        has_dll = any(f.suffix.lower() == ".dll" for f in files)
+        has_exe = any(f.suffix.lower() == ".exe" for f in files)
+        if small and has_dll and has_exe:
+            return d
+    return None
+
+
+SYSTEM_EXE = ("winedbg", "winecfg", "cmd", "taskmgr", "iexplore", "notepad", "wordpad",
+              "regedit", "explorer", "control", "msiexec", "conhost", "rundll32",
+              "start.exe", "winemine", "wineboot", "winevdm", "svchost", "dxdiag")
+SKIP_DIRS = ("windows", "Program Files/Internet Explorer", "Program Files/Common Files",
+             "Program Files (x86)/Internet Explorer", "Program Files (x86)/Common Files",
+             "Program Files/Windows NT", "Program Files (x86)/Windows NT",
+             "ProgramData", "users/Public")
+
+
+def find_installed_exe(prefix: Path, game_name: str = "") -> Path | None:
+    """Find the most likely *game* exe inside a prefix (system executables excluded)."""
+    root = prefix / "drive_c"
+    if not root.exists():
+        return None
+    name = game_name.lower().replace(" ", "")
+    cands = []
+    for p in root.rglob("*.exe"):
+        try:
+            if not p.is_file():
+                continue
+            rel = p.relative_to(root).as_posix()
+            low = p.name.lower()
+            if any(low.startswith(s) or s in low for s in SYSTEM_EXE):
+                continue
+            if any(k in low for k in ("unins", "setup", "vcredist", "dxsetup", "crashhandler",
+                                      "launcher_updater", "dotnet", "oalinst", "redist", "helper")):
+                continue
+            if any(rel.startswith(d + "/") for d in SKIP_DIRS):
+                continue
+            cands.append((p, rel))
+        except OSError:
+            continue
+    if not cands:
+        return None
+
+    def score(item):
+        p, rel = item
+        stem = p.stem.lower().replace(" ", "")
+        name_hit = 2 if (name and stem == name) else (1 if (name and (name in stem or stem in name)) else 0)
+        in_games = 1 if rel.lower().startswith("games/") else 0
+        try:
+            size = p.stat().st_size
+            mtime = p.stat().st_mtime
+        except OSError:
+            size = mtime = 0
+        return (name_hit, in_games, mtime, size)
+
+    return max(cands, key=score)[0]
+
+
+def copy_crack(crack: Path, target_dir: Path) -> int:
+    """Copy crack contents next to the installed game."""
+    n = 0
+    for f in crack.rglob("*"):
+        if not f.is_file():
+            continue
+        dest = target_dir / f.relative_to(crack)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(f, dest)
+        n += 1
+    return n
+
+
+def cmd_install(args) -> None:
+    """Run an installer under Proton (GUI), then copy any crack files and register the game."""
+    g = load_game(args.slug)
+    prefix = Path(g.get("prefix") or (PREFIX_ROOT / g["slug"]))
+    prefix.mkdir(parents=True, exist_ok=True)
+    iso = Path(g["iso"]) if g.get("iso") else None
+    mnt = Path(g["iso_mount"]) if g.get("iso_mount") else None
+    if iso and (mnt is None or not mnt.exists() or subprocess.run(["mountpoint", "-q", str(mnt)]).returncode != 0):
+        mnt = mount_iso(iso, g["slug"])
+    setup = Path(g["installer"]) if g.get("installer") else (find_installer(mnt) if mnt else None)
+    if not setup or not setup.exists():
+        die("installer not found")
+    umu = shutil.which("umu-run") or die("umu-run is not installed")
+    env = os.environ.copy()
+    env["WINEPREFIX"] = str(prefix)
+    env["GAMEID"] = g["slug"]
+    log_path = LOG_DIR / f"{g['slug']}-install.log"
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"starting installer under Proton: {setup}")
+    print(f"  prefix: {prefix}")
+    print("  (the installer window appears on the host display / in the stream)")
+    with open(log_path, "ab", buffering=0) as log:
+        log.write(f"\n===== {time.strftime('%F %T')} install {g['name']} =====\n".encode())
+        rc = subprocess.call([umu, str(setup)], env=env, cwd=str(setup.parent),
+                             stdout=log, stderr=subprocess.STDOUT)
+    print(f"installer exited: rc={rc} (log: {log_path})")
+
+    exe = find_installed_exe(prefix, g.get("name", ""))
+    if not exe:
+        die("no installed exe found in the prefix — check the log")
+    print(f"installed exe: {exe}")
+    crack = Path(g["crack_dir"]) if g.get("crack_dir") else (find_crack_dir(mnt) if mnt else None)
+    if crack and crack.exists():
+        n = copy_crack(crack, exe.parent)
+        print(f"copied {n} crack file(s) to: {exe.parent}")
+    else:
+        print("no crack directory — copy the files manually if you need them")
+
+    g["path"] = str(exe)
+    g.pop("installer", None)
+    registry_path(g["slug"]).write_text(json.dumps(g, indent=2, ensure_ascii=False) + "\n")
+
+    if getattr(args, "relocate", True):
+        # move game files into the games directory; the prefix keeps Wine state only
+        try:
+            relocate_game(g)
+        except SystemExit:
+            print("  (relocation skipped — later: gamecli relocate " + g["slug"] + ")")
+        except Exception as e:
+            print(f"  (relocation failed: {e} — later: gamecli relocate {g['slug']})")
+
+    print("registry updated, launch with: gamecli run " + g["slug"])
+    sync_sunshine(restart=True)
+
+
+
+def relocate_game(g: dict, dest_root=None, dirname=None) -> Path | None:
+    """Move a game installed inside the prefix into the games directory (prefix keeps Wine state)."""
+    exe = Path(g.get("path") or "")
+    if not exe.exists():
+        die(f"exe not found: {exe}")
+    prefix = Path(g.get("prefix") or (PREFIX_ROOT / g["slug"]))
+    try:
+        exe.relative_to(prefix)
+    except ValueError:
+        print(f"nothing to do: the game already lives outside the prefix ({exe})")
+        return exe
+    src_dir = exe.parent
+    dest = Path(dest_root or DEFAULT_GAMES_ROOT) / (dirname or g["name"])
+    if dest.exists():
+        die(f"destination already exists: {dest}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    print(f"moving: {src_dir} -> {dest}")
+    subprocess.run(["rsync", "-aH", str(src_dir) + "/", str(dest) + "/"], check=True)
+    a = subprocess.run(["du", "-sb", str(src_dir)], capture_output=True, text=True).stdout.split()[0]
+    b = subprocess.run(["du", "-sb", str(dest)], capture_output=True, text=True).stdout.split()[0]
+    if a != b:
+        die(f"size mismatch ({a} != {b}) — keeping the source")
+    shutil.rmtree(src_dir)
+    new_exe = dest / exe.name
+    g["path"] = str(new_exe)
+    registry_path(g["slug"]).write_text(json.dumps(g, indent=2, ensure_ascii=False) + "\n")
+    print(f"done: {new_exe}")
+    return new_exe
+
+
+
+def _game_pids(g: dict, table=None) -> list[int]:
+    """Processes belonging to a game (matched by exe name / prefix / game directory)."""
+    table = table if table is not None else _proc_table()
+    exe = os.path.basename(g.get("path") or "").lower()
+    prefix = str(g.get("prefix") or (PREFIX_ROOT / g["slug"]))
+    game_dir = str(Path(g.get("path") or "").parent)
+    me = os.getpid()
+    pids, seen = [], set()
+    for pid, _et, cmd in table:
+        if pid == me or pid in seen:
+            continue
+        low = cmd.lower()
+        hit = (exe and exe in low) or (prefix and prefix in cmd) or (game_dir and game_dir in cmd)
+        if not hit:
+            continue
+        # verify WINEPREFIX when readable so another game's processes are left alone
+        try:
+            env = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+            wp = next((e.split(b"=", 1)[1].decode() for e in env if e.startswith(b"WINEPREFIX=")), "")
+            if wp and prefix and os.path.realpath(wp) != os.path.realpath(prefix):
+                continue
+        except Exception:
+            pass
+        seen.add(pid)
+        pids.append(pid)
+    return pids
+
+
+def _close_window(name: str) -> bool:
+    """Close the game window (WM_CLOSE) so the game can exit cleanly."""
+    try:
+        clients = _hyprctl_json(["clients"]) or []
+    except Exception:
+        return False
+    closers = []
+    for c in clients:
+        title = (c.get("title") or "").lower()
+        klass = (c.get("class") or "").lower()
+        if name.lower() in title or klass.startswith("steam_app"):
+            if klass.startswith("steam_app") and name.lower() not in title:
+                continue
+            addr = c.get("address")
+            if addr:
+                closers.append(addr)
+    ok = False
+    for a in closers:
+        r = subprocess.run(["hyprctl", "dispatch", "closewindow", f"address:{a}"],
+                           capture_output=True, text=True)
+        ok = ok or ("ok" in (r.stdout or "").lower())
+    return ok
+
+
+def cmd_stop(args) -> None:
+    """Stop a running game (close window -> SIGTERM -> SIGKILL) and restore the display mode."""
+    targets = all_games() if args.all else [load_game(args.slug)]
+    table = _proc_table()
+    any_running = False
+    for g in targets:
+        pids = _game_pids(g, table)
+        if not pids:
+            continue
+        any_running = True
+        print(f"▶ {g['name']}: {len(pids)} process(es) — stopping")
+        if not args.force:
+            if _close_window(g["name"]):
+                print("  window closed (WM_CLOSE), waiting up to 6s…")
+                for _ in range(12):
+                    time.sleep(0.5)
+                    if not _game_pids(g):
+                        break
+        pids = _game_pids(g)
+        if pids and not args.force:
+            print(f"  SIGTERM: {pids}")
+            for pid in pids:
+                subprocess.run(["kill", "-TERM", str(pid)], check=False)
+            for _ in range(16):
+                time.sleep(0.5)
+                if not _game_pids(g):
+                    break
+        pids = _game_pids(g)
+        if pids:
+            print(f"  SIGKILL: {pids}")
+            for pid in pids:
+                subprocess.run(["kill", "-KILL", str(pid)], check=False)
+            time.sleep(1.5)
+        if _game_pids(g):
+            print("  WARNING: some processes are still alive")
+        else:
+            print("  stopped")
+    if not any_running:
+        print("no such game is running")
+    # restore the display mode if it was switched
+    if STATE_FILE.exists():
+        try:
+            name, mode = STATE_FILE.read_text().split("\n")[:2]
+            restore_monitor_mode((name, mode))
+            STATE_FILE.unlink(missing_ok=True)
+            print(f"display restored: {name} {mode}")
+        except Exception as e:
+            print(f"  (display restore failed: {e})")
+
+
+def cmd_relocate(args) -> None:
+    """Move an installed (in-prefix) game into the games directory."""
+    relocate_game(load_game(args.slug), args.dest, args.dirname)
+
+
+
+
+def cmd_desktop(args) -> None:
+    """Create a desktop entry (.desktop) so the game is launchable from the menu."""
+    g = load_game(args.slug)
+    apps = HOME / ".local/share/applications"
+    apps.mkdir(parents=True, exist_ok=True)
+    path = apps / f"gamecli-{g['slug']}.desktop"
+    path.write_text(
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        f"Name={g['name']}\n"
+        "Comment=Launch under Proton (gamecli)\n"
+        f"Exec={SELF} run {g['slug']}\n"
+        "Terminal=false\n"
+        "Categories=Game;\n"
+        f"StartupWMClass={g['slug']}\n"
+    )
+    path.chmod(0o755)
+    subprocess.run(["update-desktop-database", str(apps)], capture_output=True)
+    print(f"desktop entry: {path}")
+
+
+def cmd_run(args) -> None:
+    g = load_game(args.slug)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log = open(LOG_DIR / f"{g['slug']}.log", "ab", buffering=0)
+    log.write(f"\n===== {time.strftime('%F %T')} start {g['name']} =====\n".encode())
+
+    if g["type"] == "steam":
+        cmd = ["steam", f"steam://rungameid/{g['steam_appid']}"]
+        env = os.environ.copy()
+    else:
+        umu = shutil.which("umu-run")
+        if not umu:
+            die("umu-run is not installed (e.g. sudo pacman -S umu-launcher)")
+        exe = g["path"]
+        if not Path(exe).exists():
+            die(f"exe not found: {exe}")
+        prefix = str(g.get("prefix") or (PREFIX_ROOT / g["slug"]))
+        Path(prefix).mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env["WINEPREFIX"] = prefix
+        env["GAMEID"] = g["slug"]
+        if g.get("protonpath"):
+            env["PROTONPATH"] = g["protonpath"]
+        cmd = [umu, exe] + (shlex.split(g["args"]) if g.get("args") else [])
+
+    log.write(f"cmd: {' '.join(cmd)}\n".encode())
+
+    # Sunshine exposes the resolution the client asked for: match the host monitor to it,
+    # so we do not render at 4K and downscale when the client only wants 1080p.
+    saved = None
+    if not os.environ.get("GAMECLI_NO_DISPLAY_SWITCH"):
+        try:
+            def _parse_mode(spec: str):
+                m = re.match(r"^(\d+)x(\d+)(?:@(\d+(?:\.\d+)?))?$", (spec or "").strip())
+                return (int(m.group(1)), int(m.group(2)), float(m.group(3)) if m.group(3) else None) if m else (0, 0, None)
+
+            client_w = int(os.environ.get("SUNSHINE_CLIENT_WIDTH") or 0)
+            client_h = int(os.environ.get("SUNSHINE_CLIENT_HEIGHT") or 0)
+            if client_w and client_h:
+                # launched by Sunshine/Moonlight: follow the client resolution
+                w, h, f = client_w, client_h, (float(os.environ.get("SUNSHINE_CLIENT_FPS") or 0) or None)
+                ow, oh, of = _parse_mode(g.get("display_stream", ""))
+                if ow and oh:
+                    w, h, f = ow, oh, (of or f)
+            else:
+                # local launch (desktop/terminal): run natively, switch only when asked
+                w, h, f = _parse_mode(g.get("display", ""))
+            if w and h:
+                log.write(f"client resolution: {w}x{h}@{f}\n".encode())
+                saved = set_monitor_mode(w, h, f)
+        except Exception as e:  # a display switch must never block the launch
+            log.write(f"display switch hiba: {e}\n".encode())
+
+    try:
+        rc = subprocess.call(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, cwd=str(Path(g.get("path", HOME)).parent))
+        log.write(f"exit: {rc}\n".encode())
+    finally:
+        restore_monitor_mode(saved)
+        log.close()
+
+
+
+def _proc_table() -> list[tuple[int, int, str]]:
+    """(pid, elapsed_seconds, cmdline) rows."""
+    out = subprocess.run(["ps", "-eo", "pid=,etimes=,args="], capture_output=True, text=True).stdout
+    rows = []
+    for line in out.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            rows.append((int(parts[0]), int(parts[1]), parts[2]))
+        except ValueError:
+            continue
+    return rows
+
+
+def _running_info(g: dict, table: list[tuple[int, int, str]]) -> tuple[int, int, str] | None:
+    """Return (pid, elapsed_s, cmdline) when the game is running."""
+    if not table:
+        return None
+    exe = os.path.basename(g.get("path") or "").lower()
+    prefix = str(g.get("prefix") or "")
+    for pid, et, cmd in table:
+        low = cmd.lower()
+        if exe and exe in low:
+            # the wine/umu launcher process that runs the game exe
+            if "umu-run" in low or "wine" in low or "proton" in low or "reaper" in low:
+                return (pid, et, cmd)
+    for pid, et, cmd in table:
+        if exe and os.path.basename(cmd.split()[0]).lower() == exe:
+            return (pid, et, cmd)
+    if g.get("type") == "steam" and g.get("steam_appid"):
+        # Steam game: the steam_app_<appid> window class is the tell
+        try:
+            cl = _hyprctl_json(["clients"]) or []
+            for c in cl:
+                if (c.get("class") or "") == f"steam_app_{g['steam_appid']}":
+                    return (0, 0, "steam ablak nyitva")
+        except Exception:
+            pass
+    return None
+
+
+def _fmt_time(sec: int) -> str:
+    h, m = divmod(sec // 60, 60)
+    return f"{h}h{m:02d}m" if h else f"{m}m{sec % 60:02d}s"
+
+
+def cmd_running(args) -> None:
+    """Which registered game is currently running."""
+    table = _proc_table()
+    games = all_games()
+    running = []
+    for g in games:
+        info = _running_info(g, table)
+        if info:
+            running.append((g, info))
+    if not running:
+        print("no registered game is running")
+    else:
+        for g, (pid, et, _cmd) in running:
+            extra = f"pid {pid}, {_fmt_time(et)}" if pid else "steam ablak"
+            print(f"▶ {g['name']:<26} {g['slug']:<20} {extra}")
+    print(f"\n{len(running)}/{len(games)} game(s) running")
+
+
+def cmd_list(args) -> None:
+    games = all_games()
+    if not games:
+        print("no games registered yet — gamecli add <name> <dir|exe>")
+        return
+    table = _proc_table()
+    for g in games:
+        target = (g.get("path")
+                  or (f"steam://rungameid/{g['steam_appid']}" if g.get("steam_appid") else None)
+                  or (f"(installer pending: {g['installer']})" if g.get("installer") else "(not configured)"))
+        info = _running_info(g, table)
+        state = f"▶ FUT ({_fmt_time(info[1])})" if info and info[0] else ("▶ FUT" if info else "·")
+        print(f"{g['slug']:<28} {g['name']:<24} {g['type']:<6} {state:<14} {target}")
+
+
+def cmd_remove(args) -> None:
+    p = registry_path(args.slug)
+    if not p.exists():
+        die(f"no such game: {args.slug}")
+    p.unlink()
+    print(f"removed from registry: {args.slug}")
+    if args.purge:
+        prefix = PREFIX_ROOT / args.slug
+        if prefix.exists():
+            shutil.rmtree(prefix, ignore_errors=True)
+            print(f"prefix deleted: {prefix}")
+    if not args.no_sync:
+        sync_sunshine(restart=True)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(prog="gamecli", description="Proton/umu game launcher with Sunshine/Moonlight integration")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    a = sub.add_parser("add", help="register a game")
+    a.add_argument("name")
+    a.add_argument("path", nargs="?")
+    a.add_argument("--exe", help="executable to run (when the directory contains several)")
+    a.add_argument("--args", default="")
+    a.add_argument("--steam-appid")
+    a.add_argument("--slug")
+    a.add_argument("--prefix")
+    a.add_argument("--proton", help="explicit Proton directory (PROTONPATH), e.g. ~/.local/share/Steam/compatibilitytools.d/GE-Proton9-20")
+    a.add_argument("--dest", help="archive extraction target (default: <games_root>/<name>)")
+    a.add_argument("--image", help="Sunshine cover image (default: steam.png)")
+    a.add_argument("--no-sync", action="store_true")
+    a.set_defaults(func=cmd_add)
+
+    r = sub.add_parser("run", help="launch a game (this is what Sunshine calls)")
+    r.add_argument("slug")
+    r.set_defaults(func=cmd_run)
+
+    s = sub.add_parser("sync", help="regenerate Sunshine apps.json")
+    s.add_argument("--restart", action="store_true")
+    s.set_defaults(func=lambda a: sync_sunshine(restart=a.restart))
+
+    rel = sub.add_parser("relocate", help="move an in-prefix installed game into the games directory")
+    rel.add_argument("slug")
+    rel.add_argument("--dest", help="destination root (default: games_root)")
+    rel.add_argument("--dirname", help="destination directory name (default: game name)")
+    rel.set_defaults(func=cmd_relocate)
+
+    ins = sub.add_parser("install", help="run an installer (ISO/repack) under Proton, copy crack files, register")
+    ins.add_argument("slug")
+    ins.add_argument("--no-relocate", dest="relocate", action="store_false",
+                     help="do not move the game into the games directory (leave it in the prefix)")
+    ins.set_defaults(func=cmd_install)
+
+    ic = sub.add_parser("icon", help="set the game icon/cover (Moonlight tile)")
+    ic.add_argument("slug")
+    ic.add_argument("--file", help="local image file")
+    ic.add_argument("--url", help="image URL")
+    ic.add_argument("--steam-appid", help="Steam AppID — download the cover from there")
+    ic.add_argument("--sgdb", action="store_true",
+                    help="SteamGridDB portrait cover (needs SGDB_API_KEY in ~/.api_keys)")
+    ic.set_defaults(func=cmd_icon)
+
+    dk = sub.add_parser("desktop", help="create a desktop entry (.desktop)")
+    dk.add_argument("slug")
+    dk.set_defaults(func=cmd_desktop)
+
+    sr = sub.add_parser("setres", help="switch the monitor to the client resolution (Sunshine prep-cmd)")
+    sr.set_defaults(func=cmd_setres)
+
+    rr = sub.add_parser("restoreres", help="restore the original display mode (Sunshine undo)")
+    rr.set_defaults(func=cmd_restoreres)
+
+    st = sub.add_parser("stop", help="stop a running game (close window → SIGTERM → SIGKILL)")
+    st.add_argument("slug", nargs="?")
+    st.add_argument("--all", action="store_true", help="every running game")
+    st.add_argument("--force", action="store_true", help="immediate SIGKILL (no window close)")
+    st.set_defaults(func=cmd_stop)
+
+    rn = sub.add_parser("running", help="currently running games")
+    rn.set_defaults(func=cmd_running)
+
+    l = sub.add_parser("list", help="registered games")
+    l.set_defaults(func=cmd_list)
+
+    rm = sub.add_parser("remove", help="remove a game from the registry")
+    rm.add_argument("slug")
+    rm.add_argument("--purge", action="store_true", help="also delete the Proton prefix")
+    rm.add_argument("--no-sync", action="store_true")
+    rm.set_defaults(func=cmd_remove)
+
+    args = ap.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
