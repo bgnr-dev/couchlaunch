@@ -9,8 +9,8 @@ STAMP="$HOME/.cache/game-launcher/display-restore"
 if ss -Htn 2>/dev/null | grep -qE ':(47984|47989|48010)\b'; then exit 0; fi
 if ss -Hun 2>/dev/null | grep -qE ':(47998|47999|48000)\b'; then exit 0; fi
 
-# a game still running? (gamecli prints "<running>/<total> game(s) running")
-if "$HOME/.local/bin/gamecli" running 2>/dev/null | grep -qE '^[1-9][0-9]*/[0-9]+ game'; then exit 0; fi
+# a game still running? (gamelauncher prints "<running>/<total> game(s) running")
+if "$HOME/.local/bin/gamelauncher" running 2>/dev/null | grep -qE '^[1-9][0-9]*/[0-9]+ game'; then exit 0; fi
 
-"$HOME/.local/bin/gamecli" restoreres
-logger -t gamecli-display-guard "display mode restored (no stream/game active)"
+"$HOME/.local/bin/gamelauncher" restoreres
+logger -t gamelauncher-display-guard "display mode restored (no stream/game active)"

@@ -1,6 +1,0 @@
-[Unit]
-Description=gamecli display guard: restore the desktop mode after streaming
-
-[Service]
-Type=oneshot
-ExecStart=%h/.local/bin/gamecli-display-guard

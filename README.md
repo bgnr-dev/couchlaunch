@@ -1,4 +1,4 @@
-# gamecli
+# gamelauncher
 
 A small, opinionated command-line launcher that makes **Windows games run on a Linux
 desktop** (Proton via [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher))
@@ -11,10 +11,10 @@ up next to "Desktop" in the Moonlight app grid, with a cover image and the corre
 resolution for whatever screen is asking for it.
 
 ```
-gamecli add "Game Name" ~/Downloads/game-dir     # register (auto-detects the exe)
-gamecli list                                     # slug, name, type, state, target
-gamecli run game-name                            # what Sunshine calls
-gamecli stop game-name                           # stop it again, restore resolution
+gamelauncher add "Game Name" ~/Downloads/game-dir     # register (auto-detects the exe)
+gamelauncher list                                     # slug, name, type, state, target
+gamelauncher run game-name                            # what Sunshine calls
+gamelauncher stop game-name                           # stop it again, restore resolution
 ```
 
 ---
@@ -35,7 +35,7 @@ The desktop is where the games live. The laptop is where you actually sit. Strea
 solves the hardware problem, but it creates a pile of small, boring problems that this
 tool exists to remove:
 
-| Problem | What `gamecli` does |
+| Problem | What `gamelauncher` does |
 |---|---|
 | Every Windows game needs its own Wine prefix, its own Proton invocation and its own launch flags. | `add` records the exe, the prefix and the arguments once; `run` replays them. |
 | Sunshine needs an entry in `apps.json` per game, with the right `detached` command and an `undo` action. | `sync` regenerates those entries from the registry and restarts Sunshine safely. |
@@ -53,7 +53,7 @@ down at the desktop, click the same entry in the application menu, play natively
 
 | Source | How it is handled |
 |---|---|
-| **Steam** (installed via Steam) | `gamecli add "Name" --steam-appid <ID>` — Sunshine launches `steam://rungameid/<ID>`. |
+| **Steam** (installed via Steam) | `gamelauncher add "Name" --steam-appid <ID>` — Sunshine launches `steam://rungameid/<ID>`. |
 | **GOG offline installers** (Inno Setup `.exe` + `.bin`) | extracted with `innoextract` (no Wine needed), then registered. |
 | **DRM-free / standalone games**, already unpacked | point `add` at the directory or the exe. |
 | **Archives** (`.7z`, `.zip`, `.rar`, `.tar.*`) | extracted to the games directory, then registered. |
@@ -91,18 +91,18 @@ sudo pacman -S umu-launcher sunshine innoextract p7zip imagemagick rsync curl
 ## Install
 
 ```bash
-git clone https://github.com/<you>/gamecli.git ~/code/gamecli
-ln -sf ~/code/gamecli/gamecli ~/.local/bin/gamecli
+git clone https://github.com/<you>/gamelauncher.git ~/code/gamelauncher
+ln -sf ~/code/gamelauncher/gamelauncher ~/.local/bin/gamelauncher
 ```
 
 Optional: the resolution watchdog (restores the desktop mode if a stream dies
 without a clean shutdown):
 
 ```bash
-ln -sf ~/code/gamecli/bin/gamecli-display-guard ~/.local/bin/gamecli-display-guard
-cp ~/code/gamecli/systemd/gamecli-display-guard.{service,timer} ~/.config/systemd/user/
+ln -sf ~/code/gamelauncher/bin/gamelauncher-display-guard ~/.local/bin/gamelauncher-display-guard
+cp ~/code/gamelauncher/systemd/gamelauncher-display-guard.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now gamecli-display-guard.timer
+systemctl --user enable --now gamelauncher-display-guard.timer
 ```
 
 ## Configuration
@@ -113,7 +113,7 @@ systemctl --user enable --now gamecli-display-guard.timer
 {
   "games_root":  "~/Games",
   "prefix_root": "~/.local/share/game-prefixes",
-  "covers_root": "~/.local/share/gamecli/covers"
+  "covers_root": "~/.local/share/gamelauncher/covers"
 }
 ```
 
@@ -156,20 +156,20 @@ remove       drop a game from the registry (--purge also deletes the prefix)
 
 ```bash
 # a game already installed by Steam
-gamecli add "Some Game" --steam-appid 123456
-gamecli icon some-game            # cover art for the Moonlight tile
+gamelauncher add "Some Game" --steam-appid 123456
+gamelauncher icon some-game            # cover art for the Moonlight tile
 
 # a GOG offline installer
-gamecli add "Some Game" ~/Downloads/setup_some_game_1.2_(12345).exe
+gamelauncher add "Some Game" ~/Downloads/setup_some_game_1.2_(12345).exe
 
 # an installer ISO (mount -> install under Proton -> relocate)
-gamecli add "Some Game" ~/Downloads/some_game.iso
-gamecli install some-game
+gamelauncher add "Some Game" ~/Downloads/some_game.iso
+gamelauncher install some-game
 sudo umount /mnt/scene/some-game
 
 # a FitGirl/DODI-style repack folder (setup.exe + fg-*.bin)
-gamecli add "Some Game" "~/Downloads/Some Game [Repack]"
-gamecli install some-game          # long; runs the GUI installer under Proton
+gamelauncher add "Some Game" "~/Downloads/Some Game [Repack]"
+gamelauncher install some-game          # long; runs the GUI installer under Proton
 ```
 
 After every `add`/`install`/`icon` the Sunshine app list is regenerated; Sunshine is
@@ -178,13 +178,13 @@ restarted only when no stream is active (`sync --restart` forces it).
 ## Streaming notes
 
 - Game entries are launched with `detached`, so closing the stream does **not** kill the
-  game. Use `gamecli stop <slug>` (works over SSH) to end it.
+  game. Use `gamelauncher stop <slug>` (works over SSH) to end it.
 - On a Sunshine launch the host monitor follows `SUNSHINE_CLIENT_WIDTH/HEIGHT/FPS`;
   the previous mode is stored and restored on exit, on client disconnect, and — as a
   safety net — by the watchdog timer.
 - Cover art must be a PNG referenced by an **absolute** path: Sunshine resolves
   relative `image-path` names inside its own assets directory, not next to `apps.json`.
-  Tiles are 2:3, so `gamecli icon` normalises everything to 600×900 (crop for portrait
+  Tiles are 2:3, so `gamelauncher icon` normalises everything to 600×900 (crop for portrait
   sources, blurred backdrop for landscape ones).
 - On the client, a Super/Win key bound to a desktop shortcut (e.g. GNOME's
   `overlay-key`) never reaches the host. Add non-conflicting duplicate bindings on the
@@ -194,20 +194,25 @@ restarted only when no stream is active (`sync --restart` forces it).
 
 | Symptom | Fix |
 |---|---|
-| Moonlight tile has no image | `gamecli icon <slug>` then check that `apps.json` holds an absolute path; the Sunshine log prints `Couldn't find app image at path [...]` when it cannot resolve one. |
-| Wrong exe launched | edit `path` in `~/.config/game-launcher/games/<slug>.json`, then `gamecli sync`. |
+| Moonlight tile has no image | `gamelauncher icon <slug>` then check that `apps.json` holds an absolute path; the Sunshine log prints `Couldn't find app image at path [...]` when it cannot resolve one. |
+| Wrong exe launched | edit `path` in `~/.config/game-launcher/games/<slug>.json`, then `gamelauncher sync`. |
 | Game will not start | read `~/.cache/game-launcher/<slug>.log` (Proton output). |
-| Resolution stays at the stream size | `gamecli restoreres`, and enable the watchdog timer. |
+| Resolution stays at the stream size | `gamelauncher restoreres`, and enable the watchdog timer. |
 | Sunshine stuck in `failed` after repeated restarts | `systemctl --user reset-failed app-dev.lizardbyte.app.Sunshine.service` (the tool already does this before restarting). |
 | Two virtual gamepads / game ignores the controller | connect and start the controller *before* launching, and keep a single Moonlight instance. |
 
 ## Layout
 
 ```
-gamecli                          the tool (single-file Python 3, stdlib only)
-bin/gamecli-display-guard        resolution watchdog (systemd timer)
+gamelauncher                          the tool (single-file Python 3, stdlib only)
+bin/gamelauncher-display-guard        resolution watchdog (systemd timer)
 systemd/*.service,*.timer        watchdog units
 ```
 
 Registry/config stays in `~/.config/game-launcher/` for backwards compatibility with
 earlier private versions of this tool.
+
+## License
+
+MIT — see [LICENSE](LICENSE). The tool itself ships no game content and no DRM
+circumvention code; see the legal notice above.
