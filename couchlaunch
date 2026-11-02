@@ -658,7 +658,10 @@ def find_crack_dir(root: Path) -> Path | None:
 
 SYSTEM_EXE = ("winedbg", "winecfg", "cmd", "taskmgr", "iexplore", "notepad", "wordpad",
               "regedit", "explorer", "control", "msiexec", "conhost", "rundll32",
-              "start.exe", "winemine", "wineboot", "winevdm", "svchost", "dxdiag")
+              "start.exe", "winemine", "wineboot", "winevdm", "svchost", "dxdiag",
+              "wmplayer", "mplayer2", "mspaint", "sndvol", "magnify", "osk", "utilman",
+              "wusa", "write", "charmap", "eudcedit", "packager", "dialer", "clipbrd",
+              "ntvdm", "winhlp32", "progman", "tasklist", "xcopy", "attrib", "where")
 SKIP_DIRS = ("windows", "Program Files/Internet Explorer", "Program Files/Common Files",
              "Program Files (x86)/Internet Explorer", "Program Files (x86)/Common Files",
              "Program Files/Windows NT", "Program Files (x86)/Windows NT",
@@ -690,6 +693,20 @@ def find_installed_exe(prefix: Path, game_name: str = "") -> Path | None:
             continue
     if not cands:
         return None
+
+    # only plausible locations: under Games/, a directory named after the game, or a name match
+    if name:
+        plausible = []
+        for item in cands:
+            pth, rel = item
+            stem = pth.stem.lower().replace(" ", "")
+            flat = rel.lower().replace(" ", "")
+            if (rel.lower().startswith("games/") or stem == name
+                    or name in stem or stem in name or name in flat):
+                plausible.append(item)
+        if not plausible:
+            return None
+        cands = plausible
 
     def score(item):
         p, rel = item
@@ -735,6 +752,18 @@ def cmd_install(args) -> None:
     env = os.environ.copy()
     env["WINEPREFIX"] = str(prefix)
     env["GAMEID"] = g["slug"]
+    # the installer is a GUI application: make sure it can reach the live session
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    env.setdefault("DISPLAY", ":0")
+    rt = Path(env["XDG_RUNTIME_DIR"])
+    if rt.exists() and not env.get("WAYLAND_DISPLAY"):
+        wd = sorted(p.name for p in rt.glob("wayland-*") if not p.name.endswith(".lock"))
+        if wd:
+            env["WAYLAND_DISPLAY"] = wd[0]
+    if not env.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        sig = _hypr_signature()
+        if sig:
+            env["HYPRLAND_INSTANCE_SIGNATURE"] = sig
     log_path = LOG_DIR / f"{g['slug']}-install.log"
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     print(f"starting installer under Proton: {setup}")
@@ -906,6 +935,35 @@ def cmd_stop(args) -> None:
             print(f"display restored: {name} {mode}")
         except Exception as e:
             print(f"  (display restore failed: {e})")
+
+
+
+def cmd_adopt(args) -> None:
+    """Register a game that is already installed inside its prefix (e.g. after a manual install)."""
+    g = load_game(args.slug)
+    prefix = Path(g.get("prefix") or (PREFIX_ROOT / g["slug"]))
+    exe = find_installed_exe(prefix, g.get("name", ""))
+    if not exe:
+        die(f"no plausible game exe found in {prefix} — check the install, or pass --exe")
+    if getattr(args, "exe", None):
+        cand = next((x for x in prefix.rglob(args.exe) if x.is_file()), None)
+        if cand:
+            exe = cand
+    print(f"installed exe: {exe}")
+    crack = Path(args.crack).expanduser() if getattr(args, "crack", None) else None
+    if crack and crack.exists():
+        n = copy_crack(crack, exe.parent)
+        print(f"copied {n} crack file(s) to: {exe.parent}")
+    g["path"] = str(exe)
+    g.pop("installer", None)
+    registry_path(g["slug"]).write_text(json.dumps(g, indent=2, ensure_ascii=False) + "\n")
+    if getattr(args, "relocate", True):
+        try:
+            relocate_game(g)
+        except (SystemExit, Exception) as e:
+            print(f"  (relocation skipped: {e} — later: couchlaunch relocate {g['slug']})")
+    print("registry updated, launch with: couchlaunch run " + g["slug"])
+    sync_sunshine(restart=True)
 
 
 def cmd_relocate(args) -> None:
@@ -1123,6 +1181,14 @@ def main() -> None:
     s = sub.add_parser("sync", help="regenerate Sunshine apps.json")
     s.add_argument("--restart", action="store_true")
     s.set_defaults(func=lambda a: sync_sunshine(restart=a.restart))
+
+    ad = sub.add_parser("adopt", help="register a game that is already installed in its prefix")
+    ad.add_argument("slug")
+    ad.add_argument("--exe", help="exe file name to use inside the prefix")
+    ad.add_argument("--crack", help="crack directory to copy next to the exe")
+    ad.add_argument("--no-relocate", dest="relocate", action="store_false",
+                    help="leave the game files inside the prefix")
+    ad.set_defaults(func=cmd_adopt)
 
     rel = sub.add_parser("relocate", help="move an in-prefix installed game into the games directory")
     rel.add_argument("slug")

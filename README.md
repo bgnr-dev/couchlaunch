@@ -139,6 +139,7 @@ Logs: `~/.cache/game-launcher/<slug>.log`.
 ```
 add          register a game (dir, exe, archive, ISO, installer folder, or --steam-appid)
 install      run an installer (ISO / repack) under Proton, copy crack files, register
+adopt        register a game that is already installed in its prefix (manual installs)
 relocate     move an in-prefix installed game into the games directory
 list         registered games (with running state)
 running      what is running right now (pid + uptime)
