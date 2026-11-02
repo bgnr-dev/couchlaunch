@@ -939,8 +939,9 @@ def cmd_stop(args) -> None:
 
 
 
-def cmd_appid(args) -> None:
-    """Find the Steam AppID of an installed game by name (searches library manifests)."""
+
+def steam_games() -> list[tuple[str, str, int]]:
+    """Installed Steam games: [(appid, name, size_bytes)] from every library."""
     libs = set()
     for cand in (HOME / ".steam/steam", HOME / ".local/share/Steam", HOME / ".steam/root"):
         libs.add(cand)
@@ -951,8 +952,7 @@ def cmd_appid(args) -> None:
                     libs.add(Path(m.group(1)))
             except OSError:
                 pass
-    seen = set()
-    rows = []
+    seen, rows = set(), []
     for lib in sorted(libs):
         base = lib / "steamapps"
         if not base.exists():
@@ -971,6 +971,16 @@ def cmd_appid(args) -> None:
                 continue
             seen.add(appid)
             rows.append((appid, m_name.group(1), int(m_size.group(1)) if m_size else 0))
+    # drop runtimes / redistributables — they are not games
+    tool_re = re.compile(r"^(Proton|Steam Linux Runtime|Steamworks Common Redistributables|"
+                         r"SteamVR|Steam Controller|Steamworks SDK)", re.I)
+    rows = [r for r in rows if not tool_re.match(r[1].strip())]
+    return sorted(rows, key=lambda r: r[1].lower())
+
+
+def cmd_appid(args) -> None:
+    """Find the Steam AppID of an installed game by name."""
+    rows = steam_games()
     if not rows:
         die("no Steam library manifests found (is Steam installed for this user?)")
     needle = args.name.lower()
@@ -982,6 +992,41 @@ def cmd_appid(args) -> None:
         print(f"{appid:<10} {size / 1e9:7.1f} GB  {name}")
         if args.add:
             print(f"  → couchlaunch add \"{name}\" --steam-appid {appid}")
+
+
+def cmd_steam(args) -> None:
+    """List every installed Steam game (and optionally register them all)."""
+    rows = steam_games()
+    if not rows:
+        die("no Steam library manifests found (is Steam installed for this user?)")
+    if args.filter:
+        needle = args.filter.lower()
+        rows = [r for r in rows if needle in r[1].lower()]
+    registered = {g.get("steam_appid") for g in all_games() if g.get("steam_appid")}
+    todo = []
+    if args.json:
+        print(json.dumps([{"appid": a, "name": n, "size": sz} for a, n, sz in rows], indent=2))
+        return
+    print(f"{'APPID':<10} {'SIZE':>9}  {'':2} NAME")
+    for appid, name, size in rows:
+        mark = "✓" if appid in registered else " "
+        print(f"{appid:<10} {size / 1e9:8.1f}G  {mark} {name}")
+        if appid not in registered:
+            todo.append((appid, name))
+    print(f"\n{len(rows)} installed, {len(registered & {r[0] for r in rows})} already registered, "
+          f"{len(todo)} not registered")
+    if args.add_all and todo:
+        for appid, name in todo:
+            slug = slugify(name)
+            entry = {
+                "name": name, "slug": slug, "type": "steam",
+                "steam_appid": str(appid), "args": "", "sunshine": True,
+                "image": "steam.png", "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            registry_path(slug).write_text(json.dumps(entry, indent=2, ensure_ascii=False) + "\n")
+            print(f"  + {name} ({appid}) -> {slug}")
+        sync_sunshine(restart=True)
+        print("tip: couchlaunch icon <slug> for cover art")
 
 
 def cmd_adopt(args) -> None:
@@ -1227,6 +1272,13 @@ def main() -> None:
     s = sub.add_parser("sync", help="regenerate Sunshine apps.json")
     s.add_argument("--restart", action="store_true")
     s.set_defaults(func=lambda a: sync_sunshine(restart=a.restart))
+
+    sm = sub.add_parser("steam", help="list installed Steam games (optionally register them)")
+    sm.add_argument("filter", nargs="?", help="only names containing this text")
+    sm.add_argument("--add-all", dest="add_all", action="store_true",
+                    help="register every not-yet-registered Steam game")
+    sm.add_argument("--json", action="store_true", help="machine-readable output")
+    sm.set_defaults(func=cmd_steam)
 
     aid = sub.add_parser("appid", help="find the Steam AppID of an installed game by name")
     aid.add_argument("name")
