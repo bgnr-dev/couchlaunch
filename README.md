@@ -53,7 +53,7 @@ down at the desktop, click the same entry in the application menu, play natively
 
 | Source | How it is handled |
 |---|---|
-| **Steam** (installed via Steam) | `couchlaunch add "Name" --steam-appid <ID>` — Sunshine launches `steam://rungameid/<ID>`. |
+| **Steam** (installed via Steam) | `couchlaunch appid "name"` finds the AppID in every library; then `couchlaunch add "Name" --steam-appid <ID>` — Sunshine launches `steam://rungameid/<ID>`. |
 | **GOG offline installers** (Inno Setup `.exe` + `.bin`) | extracted with `innoextract` (no Wine needed), then registered. |
 | **DRM-free / standalone games**, already unpacked | point `add` at the directory or the exe. |
 | **Archives** (`.7z`, `.zip`, `.rar`, `.tar.*`) | extracted to the games directory, then registered. |
@@ -139,6 +139,7 @@ Logs: `~/.cache/game-launcher/<slug>.log`.
 ```
 add          register a game (dir, exe, archive, ISO, installer folder, or --steam-appid)
 install      run an installer (ISO / repack) under Proton, copy crack files, register
+appid        find the Steam AppID of an installed game by name
 adopt        register a game that is already installed in its prefix (manual installs)
 relocate     move an in-prefix installed game into the games directory
 list         registered games (with running state)

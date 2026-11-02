@@ -938,6 +938,52 @@ def cmd_stop(args) -> None:
 
 
 
+
+def cmd_appid(args) -> None:
+    """Find the Steam AppID of an installed game by name (searches library manifests)."""
+    libs = set()
+    for cand in (HOME / ".steam/steam", HOME / ".local/share/Steam", HOME / ".steam/root"):
+        libs.add(cand)
+        vdf = cand / "steamapps/libraryfolders.vdf"
+        if vdf.exists():
+            try:
+                for m in re.finditer(r'"path"\s+"([^"]+)"', vdf.read_text(errors="ignore")):
+                    libs.add(Path(m.group(1)))
+            except OSError:
+                pass
+    seen = set()
+    rows = []
+    for lib in sorted(libs):
+        base = lib / "steamapps"
+        if not base.exists():
+            continue
+        for acf in base.glob("appmanifest_*.acf"):
+            try:
+                txt = acf.read_text(errors="ignore")
+            except OSError:
+                continue
+            m_name = re.search(r'"name"\s+"([^"]+)"', txt)
+            m_size = re.search(r'"SizeOnDisk"\s+"(\d+)"', txt)
+            if not m_name:
+                continue
+            appid = acf.stem.split("_")[-1]
+            if appid in seen:
+                continue
+            seen.add(appid)
+            rows.append((appid, m_name.group(1), int(m_size.group(1)) if m_size else 0))
+    if not rows:
+        die("no Steam library manifests found (is Steam installed for this user?)")
+    needle = args.name.lower()
+    hits = [r for r in rows if needle in r[1].lower()]
+    if not hits:
+        print(f"no installed Steam game matches '{args.name}' — {len(rows)} games scanned")
+        return
+    for appid, name, size in sorted(hits, key=lambda r: -r[2]):
+        print(f"{appid:<10} {size / 1e9:7.1f} GB  {name}")
+        if args.add:
+            print(f"  → couchlaunch add \"{name}\" --steam-appid {appid}")
+
+
 def cmd_adopt(args) -> None:
     """Register a game that is already installed inside its prefix (e.g. after a manual install)."""
     g = load_game(args.slug)
@@ -1181,6 +1227,11 @@ def main() -> None:
     s = sub.add_parser("sync", help="regenerate Sunshine apps.json")
     s.add_argument("--restart", action="store_true")
     s.set_defaults(func=lambda a: sync_sunshine(restart=a.restart))
+
+    aid = sub.add_parser("appid", help="find the Steam AppID of an installed game by name")
+    aid.add_argument("name")
+    aid.add_argument("--add", action="store_true", help="print the add command for each match")
+    aid.set_defaults(func=cmd_appid)
 
     ad = sub.add_parser("adopt", help="register a game that is already installed in its prefix")
     ad.add_argument("slug")
