@@ -72,7 +72,7 @@ def slugify(name: str) -> str:
 
 
 def die(msg: str, code: int = 1):
-    print(f"HIBA: {msg}", file=sys.stderr)
+    print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(code)
 
 
@@ -157,7 +157,7 @@ def extract_inno(installer: Path, dest: Path) -> None:
     """Extract an Inno Setup / GOG offline installer — deliberately not run under Wine."""
     tool = shutil.which("innoextract")
     if not tool:
-        die("nincs innoextract (sudo pacman -S innoextract)")
+        die("innoextract is not installed (e.g. sudo pacman -S innoextract)")
     if not dest.exists() and not os.access(dest.parent, os.W_OK):
         die(f"no write permission for {dest.parent} — sudo mkdir -p {dest.parent} && sudo chown $USER:$USER {dest.parent}")
     dest.mkdir(parents=True, exist_ok=True)
@@ -223,8 +223,8 @@ def sync_sunshine(restart: bool = False) -> None:
         apps["apps"].append({
             "name": g["name"],
             "detached": [f"setsid {SELF} run {g['slug']}"],
-            # restores the display mode when the stream ends (client quit / game exit)
-            "prep-cmd": [{"do": "true", "undo": f"{SELF} restoreres"}],
+            # follow the client resolution for the whole session, restore on exit
+            "prep-cmd": [{"do": f"{SELF} setres", "undo": f"{SELF} restoreres"}],
             "image-path": g.get("image", "steam.png"),
         })
     SUNSHINE_APPS.parent.mkdir(parents=True, exist_ok=True)
@@ -949,7 +949,12 @@ def cmd_run(args) -> None:
         umu = shutil.which("umu-run")
         if not umu:
             die("umu-run is not installed (e.g. sudo pacman -S umu-launcher)")
-        exe = g["path"]
+        exe = g.get("path")
+        if not exe:
+            if g.get("installer"):
+                die(f"'{g['name']}' is not installed yet — run: couchlaunch install {g['slug']}")
+            die(f"'{g['name']}' has no executable configured — edit: "
+                f"{registry_path(g['slug'])}")
         if not Path(exe).exists():
             die(f"exe not found: {exe}")
         prefix = str(g.get("prefix") or (PREFIX_ROOT / g["slug"]))
@@ -1074,7 +1079,7 @@ def cmd_list(args) -> None:
                   or (f"steam://rungameid/{g['steam_appid']}" if g.get("steam_appid") else None)
                   or (f"(installer pending: {g['installer']})" if g.get("installer") else "(not configured)"))
         info = _running_info(g, table)
-        state = f"▶ FUT ({_fmt_time(info[1])})" if info and info[0] else ("▶ FUT" if info else "·")
+        state = f"▶ RUNNING ({_fmt_time(info[1])})" if info and info[0] else ("▶ RUNNING" if info else "·")
         print(f"{g['slug']:<28} {g['name']:<24} {g['type']:<6} {state:<14} {target}")
 
 
