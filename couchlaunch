@@ -1015,6 +1015,11 @@ def cmd_steam(args) -> None:
             todo.append((appid, name))
     print(f"\n{len(rows)} installed, {len(registered & {r[0] for r in rows})} already registered, "
           f"{len(todo)} not registered")
+    if todo and not args.add_all:
+        if len(todo) == 1:
+            print(f'hint: couchlaunch steam "{todo[0][1]}" --add')
+        else:
+            print(f'hint: couchlaunch steam --add     (or one: couchlaunch steam "{todo[0][1]}" --add)')
     if args.add_all and todo:
         for appid, name in todo:
             slug = slugify(name)
@@ -1026,7 +1031,11 @@ def cmd_steam(args) -> None:
             registry_path(slug).write_text(json.dumps(entry, indent=2, ensure_ascii=False) + "\n")
             print(f"  + {name} ({appid}) -> {slug}")
         sync_sunshine(restart=True)
-        print("tip: couchlaunch icon <slug> for cover art")
+        if getattr(args, "icons", False):
+            for _appid, name in todo:
+                subprocess.run([SELF, "icon", slugify(name)], check=False)
+        else:
+            print(f"tip: covers with: couchlaunch steam --add --icons")
 
 
 def cmd_adopt(args) -> None:
@@ -1275,9 +1284,10 @@ def main() -> None:
 
     sm = sub.add_parser("steam", help="list installed Steam games (optionally register them)")
     sm.add_argument("filter", nargs="?", help="only names containing this text")
-    sm.add_argument("--add-all", dest="add_all", action="store_true",
-                    help="register every not-yet-registered Steam game")
+    sm.add_argument("--add", "--add-all", dest="add_all", action="store_true",
+                    help="register the listed (not yet registered) games")
     sm.add_argument("--json", action="store_true", help="machine-readable output")
+    sm.add_argument("--icons", action="store_true", help="with --add: also fetch cover art")
     sm.set_defaults(func=cmd_steam)
 
     aid = sub.add_parser("appid", help="find the Steam AppID of an installed game by name")
