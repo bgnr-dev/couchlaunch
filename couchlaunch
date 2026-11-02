@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""gamelauncher — register and launch Windows games on Linux via Proton (umu-launcher),
+"""couchlaunch — register and launch Windows games on Linux via Proton (umu-launcher),
 with Sunshine/Moonlight streaming integration.
 
 Parancsok:
-  gamelauncher add <name> <dir|exe|archive> [--exe file.exe] [--args "..."] [--no-sync]
-  gamelauncher add <name> --steam-appid <ID>          # game installed through Steam
-  gamelauncher run <slug>                            # this is what Sunshine calls
-  gamelauncher list
-  gamelauncher sync [--restart]                      # regenerate Sunshine apps.json
-  gamelauncher remove <slug> [--purge]
+  couchlaunch add <name> <dir|exe|archive> [--exe file.exe] [--args "..."] [--no-sync]
+  couchlaunch add <name> --steam-appid <ID>          # game installed through Steam
+  couchlaunch run <slug>                            # this is what Sunshine calls
+  couchlaunch list
+  couchlaunch sync [--restart]                      # regenerate Sunshine apps.json
+  couchlaunch remove <slug> [--purge]
 
 Registry:  ~/.config/game-launcher/games/<slug>.json
 Prefixek:  ~/.local/share/game-prefixes/<slug>
@@ -39,7 +39,7 @@ def _load_settings() -> dict:
     """~/.config/game-launcher/config.json: games_root, prefix_root, covers_root."""
     s = {"games_root": str(HOME / "Games"),
          "prefix_root": str(HOME / ".local/share/game-prefixes"),
-         "covers_root": str(HOME / ".local/share/gamelauncher/covers")}
+         "covers_root": str(HOME / ".local/share/couchlaunch/covers")}
     f = CONF_DIR / "config.json"
     if f.exists():
         try:
@@ -56,7 +56,7 @@ def _load_settings() -> dict:
 _SETTINGS = _load_settings()
 PREFIX_ROOT = Path(_SETTINGS["prefix_root"]).expanduser()
 DEFAULT_GAMES_ROOT = Path(_SETTINGS["games_root"]).expanduser()
-GAME_MARKERS = ("gamelauncher run", "gamecli run")   # legacy marker kept so old entries get replaced
+GAME_MARKERS = ("couchlaunch run", "gamelauncher run", "gamecli run")   # legacy markers: old entries get replaced
 SELF = str(Path(__file__).resolve())
 
 SKIP_EXE = re.compile(
@@ -88,7 +88,7 @@ def registry_path(slug: str) -> Path:
 def load_game(slug: str) -> dict:
     p = registry_path(slug)
     if not p.exists():
-        die(f"no such registered game: {slug} (see: gamelauncher list)")
+        die(f"no such registered game: {slug} (see: couchlaunch list)")
     return json.loads(p.read_text())
 
 
@@ -180,7 +180,7 @@ def sunshine_restart_if_idle() -> None:
     if busy:
         print("  (STREAM ACTIVE — not restarting Sunshine, that would kill the running game.)")
         print("  The change applies on the next Sunshine start; or end the stream and run:")
-        print("  gamelauncher sync --restart")
+        print("  couchlaunch sync --restart")
         return
     unit = "app-dev.lizardbyte.app.Sunshine.service"
     # rapid successive restarts trip systemd's start-limit — reset-failed + short pause
@@ -444,7 +444,7 @@ def cmd_add(args) -> None:
                 print(f"  installer: {setup.name}")
                 if crack:
                     print(f"  crack:    {crack.name}")
-                print(f"\nNext step:  gamelauncher install {slug}")
+                print(f"\nNext step:  couchlaunch install {slug}")
                 print("  (the installer runs under Proton; its GUI appears on the desktop / in the stream)")
                 if not args.no_sync:
                     sync_sunshine(restart=True)
@@ -460,7 +460,7 @@ def cmd_add(args) -> None:
             registry_path(slug).write_text(json.dumps(entry, indent=2, ensure_ascii=False) + "\n")
             print(f"Repack felismerve: {src}")
             print(f"  installer: {setup.name}  (+ {len(list(src.glob('*.bin')))} .bin files)")
-            print(f"\nNext step:  gamelauncher install {slug}")
+            print(f"\nNext step:  couchlaunch install {slug}")
             print("  (the installer runs under Proton; its GUI appears on the desktop / in the stream;")
             print("   for 60+ GB this can take 1-2 hours)")
             if not args.no_sync:
@@ -766,11 +766,11 @@ def cmd_install(args) -> None:
         try:
             relocate_game(g)
         except SystemExit:
-            print("  (relocation skipped — later: gamelauncher relocate " + g["slug"] + ")")
+            print("  (relocation skipped — later: couchlaunch relocate " + g["slug"] + ")")
         except Exception as e:
-            print(f"  (relocation failed: {e} — later: gamelauncher relocate {g['slug']})")
+            print(f"  (relocation failed: {e} — later: couchlaunch relocate {g['slug']})")
 
-    print("registry updated, launch with: gamelauncher run " + g["slug"])
+    print("registry updated, launch with: couchlaunch run " + g["slug"])
     sync_sunshine(restart=True)
 
 
@@ -920,12 +920,12 @@ def cmd_desktop(args) -> None:
     g = load_game(args.slug)
     apps = HOME / ".local/share/applications"
     apps.mkdir(parents=True, exist_ok=True)
-    path = apps / f"gamelauncher-{g['slug']}.desktop"
+    path = apps / f"couchlaunch-{g['slug']}.desktop"
     path.write_text(
         "[Desktop Entry]\n"
         "Type=Application\n"
         f"Name={g['name']}\n"
-        "Comment=Launch under Proton (gamelauncher)\n"
+        "Comment=Launch under Proton (couchlaunch)\n"
         f"Exec={SELF} run {g['slug']}\n"
         "Terminal=false\n"
         "Categories=Game;\n"
@@ -1066,7 +1066,7 @@ def cmd_running(args) -> None:
 def cmd_list(args) -> None:
     games = all_games()
     if not games:
-        print("no games registered yet — gamelauncher add <name> <dir|exe>")
+        print("no games registered yet — couchlaunch add <name> <dir|exe>")
         return
     table = _proc_table()
     for g in games:
@@ -1094,7 +1094,7 @@ def cmd_remove(args) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(prog="gamelauncher", description="Proton/umu game launcher with Sunshine/Moonlight integration")
+    ap = argparse.ArgumentParser(prog="couchlaunch", description="Proton/umu game launcher with Sunshine/Moonlight integration")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     a = sub.add_parser("add", help="register a game")

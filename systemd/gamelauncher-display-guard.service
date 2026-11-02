@@ -1,6 +1,0 @@
-[Unit]
-Description=gamelauncher display guard: restore the desktop mode after streaming
-
-[Service]
-Type=oneshot
-ExecStart=%h/.local/bin/gamelauncher-display-guard

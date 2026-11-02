@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodic display-mode check (gamelauncher)
+Description=Periodic display-mode check (couchlaunch)
 
 [Timer]
 OnBootSec=2min

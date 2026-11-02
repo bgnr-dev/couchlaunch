@@ -1,0 +1,6 @@
+[Unit]
+Description=couchlaunch display guard: restore the desktop mode after streaming
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/couchlaunch-display-guard
