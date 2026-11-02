@@ -201,6 +201,7 @@ restarted only when no stream is active (`sync --restart` forces it).
 | Wrong exe launched | edit `path` in `~/.config/game-launcher/games/<slug>.json`, then `couchlaunch sync`. |
 | Game will not start | read `~/.cache/game-launcher/<slug>.log` (Proton output). |
 | Resolution stays at the stream size | `couchlaunch restoreres`, and enable the watchdog timer. |
+| Sunshine exits with `System tray is not initialized` | No StatusNotifier host (bar/panel not running). Either start the panel, or add `system_tray = disabled` to `sunshine.conf`. |
 | Sunshine stuck in `failed` after repeated restarts | `systemctl --user reset-failed app-dev.lizardbyte.app.Sunshine.service` (the tool already does this before restarting). |
 | Two virtual gamepads / game ignores the controller | connect and start the controller *before* launching, and keep a single Moonlight instance. |
 
