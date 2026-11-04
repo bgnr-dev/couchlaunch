@@ -13,6 +13,11 @@ prefix, the resolution hand-off and the Sunshine app list in sync — so the gam
 up next to "Desktop" in the Moonlight app grid, with a cover image and the correct
 resolution for whatever screen is asking for it.
 
+![The Sunshine app list in a Moonlight client](docs/moonlight-app-grid.webp)
+
+*What a Moonlight client sees after `couchlaunch add` / `couchlaunch steam --add --icons`:*
+*every registered game as a tile, with its cover art.*
+
 > [!NOTE]
 > **This project is vibe-coded.** It was written mostly by an AI assistant from a human's
 > problem descriptions, then forced to work by running it against real games, real
