@@ -38,7 +38,34 @@ couchlaunch stop game-name                           # stop it again, restore re
 
 ---
 
+## Prerequisites: a working Sunshine + Moonlight setup
+
+**`couchlaunch` does not set up streaming.** It is the piece that fills the app grid; the
+stream itself has to work before it is any use. Do this once, first:
+
+1. **Install and run Sunshine on the gaming desktop** —
+   [Sunshine docs](https://docs.lizardbyte.dev/projects/sunshine/latest/) ·
+   [getting started](https://docs.lizardbyte.dev/projects/sunshine/latest/md_docs_2getting__started.html) ·
+   [GitHub](https://github.com/LizardByte/Sunshine).
+   Run it as a user service (`systemctl --user enable --now app-dev.lizardbyte.app.Sunshine.service`)
+   and keep in mind it needs a StatusNotifier host (a panel/bar) or `system_tray = disabled`.
+2. **Install the Moonlight client on the laptop** —
+   [moonlight-stream.org](https://moonlight-stream.org/) ·
+   [Moonlight Qt](https://github.com/moonlight-stream/moonlight-qt).
+3. **Pair them** (Moonlight shows a PIN, Sunshine asks for it once) —
+   [Moonlight setup guide](https://github.com/moonlight-stream/moonlight-docs/wiki/Setup-Guide).
+4. **Prove the stream works** with a built-in Sunshine entry ("Desktop" is enough): picture,
+   sound, keyboard and gamepad must all arrive. Only then continue.
+
+When that works, `couchlaunch` takes over the app list. If something is broken *before* any
+game is involved (no host in Moonlight, pairing fails, black screen on Desktop, no input,
+choppy video), it is a Sunshine/Moonlight/network problem — the tool never touches the
+stream itself, so its own troubleshooting does not apply.
+
 ## How you actually use it
+
+Assumes the streaming side already works — see [Prerequisites](#prerequisites-a-working-sunshine--moonlight-setup)
+if it does not yet.
 
 Two machines, one workflow. The **gaming desktop** has the GPU, the games and Sunshine;
 the **laptop on the couch** only needs Moonlight. You never leave the couch to manage
