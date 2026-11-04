@@ -38,6 +38,63 @@ couchlaunch stop game-name                           # stop it again, restore re
 
 ---
 
+## How you actually use it
+
+Two machines, one workflow. The **gaming desktop** has the GPU, the games and Sunshine;
+the **laptop on the couch** only needs Moonlight. You never leave the couch to manage
+anything — you drive the desktop over SSH and let Moonlight do the playing.
+
+| | Gaming desktop (the big one) | Laptop (the dumb one) |
+|---|---|---|
+| Runs | Sunshine service, Proton games, `couchlaunch` | Moonlight client only |
+| You do | `ssh` in and register/install games | click a tile in the app grid |
+| Output | renders + encodes the game | decodes it to its own screen |
+
+### 1. From the couch: register a game over SSH
+
+```bash
+ssh you@gaming-desktop
+
+couchlaunch steam                     # what Steam already has installed
+couchlaunch steam --add --icons       # register all of it + download covers
+couchlaunch add "Some Game" ~/Downloads/some-game    # folder, exe, archive or ISO
+couchlaunch icon some-game            # cover for the tile in Moonlight
+couchlaunch list                      # sanity check: slug, name, target
+```
+
+Every `add`/`steam --add`/`install` regenerates the Sunshine app list, so the new game is
+already waiting in Moonlight by the time you put the laptop down.
+
+### 2. Lean back: play it from Moonlight
+
+1. Laptop: open Moonlight and pick the host (the gaming desktop).
+2. The app grid shows every registered game as a tile with its cover art.
+3. Click a tile → Sunshine runs `couchlaunch run <slug>` → the desktop's monitor switches
+   to *your laptop's* resolution (e.g. 4K screen → 1080p60 stream) → the game starts
+   fullscreen, at 1:1 pixels, no upscaling.
+4. Quit the game: the stream ends and the desktop switches back to its own mode. If the
+   game hangs, end it from the laptop with
+   `ssh you@gaming-desktop 'couchlaunch stop <slug>'` — that closes the window, kills the
+   process and restores the display mode.
+
+### 3. If you sit at the desk instead
+
+Same registry, same entries: launch from the app menu (`couchlaunch desktop <slug>`) or
+`couchlaunch run <slug>` in a terminal. Local launches are left alone — they run natively
+on the desktop's own 4K display, no stream involved.
+
+### Day-2 operations (all over SSH)
+
+```bash
+couchlaunch running                  # what is running right now
+couchlaunch stop <slug>              # stop a stuck game, restore the display mode
+couchlaunch steam --add              # pick up games installed since last time
+couchlaunch sync --restart           # push the app list to Sunshine again
+tail -f ~/.cache/couchlaunch/<slug>.log   # Proton output for one game
+```
+
+---
+
 ## Why this exists
 
 Two machines, one GPU:
