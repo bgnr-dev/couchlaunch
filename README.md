@@ -110,7 +110,9 @@ sudo pacman -S umu-launcher sunshine innoextract p7zip imagemagick rsync curl
 ## Install
 
 ```bash
-git clone https://github.com/<you>/couchlaunch.git ~/code/couchlaunch
+git clone https://github.com/bgnr-dev/couchlaunch.git ~/code/couchlaunch
+#   (or: git clone git@github.com:bgnr-dev/couchlaunch.git ~/code/couchlaunch
+#        gh repo clone bgnr-dev/couchlaunch ~/code/couchlaunch)
 ln -sf ~/code/couchlaunch/couchlaunch ~/.local/bin/couchlaunch
 ```
 
