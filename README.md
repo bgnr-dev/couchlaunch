@@ -1,5 +1,8 @@
 # couchlaunch
 
+![vibe-coded](https://img.shields.io/badge/code-vibe--coded-ff69b4)
+![human-reviewed](https://img.shields.io/badge/human-ran%20every%20command-brightgreen)
+
 A small, opinionated command-line launcher that makes **Windows games run on a Linux
 desktop** (Proton via [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher))
 and makes them **launchable from Moonlight clients** through a
@@ -9,6 +12,17 @@ One command registers a game; the tool then keeps the game registry, the Proton
 prefix, the resolution hand-off and the Sunshine app list in sync — so the game shows
 up next to "Desktop" in the Moonlight app grid, with a cover image and the correct
 resolution for whatever screen is asking for it.
+
+> [!NOTE]
+> **This project is vibe-coded.** It was written mostly by an AI assistant from a human's
+> problem descriptions, then forced to work by running it against real games, real
+> installers and a real Moonlight client. Every command in this README was executed on a
+> live machine — but the code has rough edges, unexplained decisions and no test suite.
+>
+> Use it as a starting point, not as infrastructure: read the script before letting it
+> touch your library, and expect the failure modes of a weekend project rather than those
+> of a distribution package. Issues and PRs that turn "it worked on my machine" into
+> tested behaviour are very welcome.
 
 ```
 couchlaunch add "Game Name" ~/Downloads/game-dir     # register (auto-detects the exe)

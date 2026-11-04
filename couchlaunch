@@ -1257,7 +1257,12 @@ def cmd_remove(args) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(prog="couchlaunch", description="Proton/umu game launcher with Sunshine/Moonlight integration")
+    ap = argparse.ArgumentParser(
+        prog="couchlaunch",
+        description="Proton/umu game launcher with Sunshine/Moonlight integration",
+        epilog="vibe-coded: written with an AI assistant, used on real games. Read the source "
+               "before trusting it with your library.",
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     a = sub.add_parser("add", help="register a game")
