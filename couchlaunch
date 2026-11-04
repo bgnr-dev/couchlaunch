@@ -2,18 +2,19 @@
 """couchlaunch — register and launch Windows games on Linux via Proton (umu-launcher),
 with Sunshine/Moonlight streaming integration.
 
-Parancsok:
+Commands:
   couchlaunch add <name> <dir|exe|archive> [--exe file.exe] [--args "..."] [--no-sync]
   couchlaunch add <name> --steam-appid <ID>          # game installed through Steam
+  couchlaunch steam [--add] [--icons]               # list / register installed Steam games
   couchlaunch run <slug>                            # this is what Sunshine calls
-  couchlaunch list
+  couchlaunch list | running | stop <slug>
   couchlaunch sync [--restart]                      # regenerate Sunshine apps.json
   couchlaunch remove <slug> [--purge]
 
 Registry:  ~/.config/game-launcher/games/<slug>.json
-Prefixek:  ~/.local/share/game-prefixes/<slug>
-Logok:     ~/.cache/game-launcher/<slug>.log
-Games:      ~/Games (default target for archive extraction)
+Prefixes:  ~/.local/share/game-prefixes/<slug>
+Logs:      ~/.cache/game-launcher/<slug>.log
+Games:     ~/Games (default target for archive extraction)
 """
 from __future__ import annotations
 
