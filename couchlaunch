@@ -452,7 +452,7 @@ def cmd_add(args) -> None:
             # no installer found: maybe the ISO already contains a ready-to-run game
             src = mnt
 
-        # FitGirl/DODI repack: a setup.exe-t Proton alatt KELL futtatni (nem csomagoljuk ki)
+        # FitGirl/DODI repack: the setup.exe must be RUN, it is not an archive to extract
         if src.is_dir() and is_repack(src):
             setup = next((p for p in sorted(src.glob("*.exe")) if looks_like_installer(p)), None) or (src / "setup.exe")
             entry["installer"] = str(setup)
@@ -1150,7 +1150,7 @@ def cmd_run(args) -> None:
                 log.write(f"client resolution: {w}x{h}@{f}\n".encode())
                 saved = set_monitor_mode(w, h, f)
         except Exception as e:  # a display switch must never block the launch
-            log.write(f"display switch hiba: {e}\n".encode())
+            log.write(f"display switch error: {e}\n".encode())
 
     try:
         rc = subprocess.call(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, cwd=str(Path(g.get("path", HOME)).parent))
