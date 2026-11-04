@@ -13,7 +13,7 @@ prefix, the resolution hand-off and the Sunshine app list in sync — so the gam
 up next to "Desktop" in the Moonlight app grid, with a cover image and the correct
 resolution for whatever screen is asking for it.
 
-![The Sunshine app list in a Moonlight client](docs/moonlight-app-grid.webp)
+![The Sunshine app list in a Moonlight client](screenshot.webp)
 
 *What a Moonlight client sees after `couchlaunch add` / `couchlaunch steam --add --icons`:*
 *every registered game as a tile, with its cover art.*
@@ -329,7 +329,7 @@ restarted only when no stream is active (`sync --restart` forces it).
 couchlaunch                      the tool (single-file Python 3, stdlib only)
 couchlaunch-display-guard        resolution watchdog (systemd timer)
 systemd/*.service,*.timer        watchdog units
-docs/moonlight-app-grid.webp     screenshot used in this README
+screenshot.webp                  the Moonlight app grid shown above
 ```
 
 Configuration lives in `~/.config/couchlaunch/` (registries) and `~/.cache/couchlaunch/`
