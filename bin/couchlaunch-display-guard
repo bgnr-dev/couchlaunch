@@ -2,8 +2,9 @@
 # Display guard: restores the desktop display mode when a stream ended without a
 # clean shutdown (no active stream, no game running, but a switched mode pending).
 set -uo pipefail
-STAMP="$HOME/.cache/game-launcher/display-restore"
-[ -f "$STAMP" ] || exit 0
+TOOL="$HOME/.local/bin/couchlaunch"
+STAMP="$("$TOOL" state-path 2>/dev/null)"
+[ -n "$STAMP" ] && [ -f "$STAMP" ] || exit 0
 
 # active stream? (Sunshine control + video ports)
 if ss -Htn 2>/dev/null | grep -qE ':(47984|47989|48010)\b'; then exit 0; fi

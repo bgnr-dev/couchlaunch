@@ -11,9 +11,9 @@ Commands:
   couchlaunch sync [--restart]                      # regenerate Sunshine apps.json
   couchlaunch remove <slug> [--purge]
 
-Registry:  ~/.config/game-launcher/games/<slug>.json
+Registry:  ~/.config/couchlaunch/games/<slug>.json
 Prefixes:  ~/.local/share/game-prefixes/<slug>
-Logs:      ~/.cache/game-launcher/<slug>.log
+Logs:      ~/.cache/couchlaunch/<slug>.log
 Games:     ~/Games (default target for archive extraction)
 """
 from __future__ import annotations
@@ -30,14 +30,30 @@ import time
 from pathlib import Path
 
 HOME = Path.home()
-CONF_DIR = HOME / ".config/game-launcher"
+def _data_dir(new: Path, legacy: Path) -> Path:
+    """Use the current directory; migrate a pre-rename directory once, if present."""
+    if new.exists():
+        return new
+    if legacy.exists():
+        try:
+            new.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(legacy), str(new))
+            print(f"note: migrated {legacy} -> {new}", file=sys.stderr)
+            return new
+        except OSError:
+            return legacy
+    return new
+
+
+CONF_DIR = _data_dir(HOME / ".config/couchlaunch", HOME / ".config/game-launcher")
 GAMES_DIR = CONF_DIR / "games"
-LOG_DIR = HOME / ".cache/game-launcher"
+LOG_DIR = _data_dir(HOME / ".cache/couchlaunch", HOME / ".cache/game-launcher")
+STATE_FILE = LOG_DIR / "display-restore"
 SUNSHINE_APPS = HOME / ".config/sunshine/apps.json"
 
 
 def _load_settings() -> dict:
-    """~/.config/game-launcher/config.json: games_root, prefix_root, covers_root."""
+    """~/.config/couchlaunch/config.json: games_root, prefix_root, covers_root."""
     s = {"games_root": str(HOME / "Games"),
          "prefix_root": str(HOME / ".local/share/game-prefixes"),
          "covers_root": str(HOME / ".local/share/couchlaunch/covers")}
@@ -586,7 +602,6 @@ def restore_monitor_mode(saved: tuple[str, str] | None) -> None:
     subprocess.run(["hyprctl", "eval", expr], capture_output=True, text=True, env=_hypr_env())
     print(f"display restored: {name} {mode}")
 
-STATE_FILE = LOG_DIR / "display-restore"
 
 
 def cmd_setres(args) -> None:
@@ -601,6 +616,12 @@ def cmd_setres(args) -> None:
     if saved:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         STATE_FILE.write_text(f"{saved[0]}\n{saved[1]}\n")
+
+
+
+def cmd_state_path(args) -> None:
+    """Print the display-state file path (used by the watchdog script)."""
+    print(STATE_FILE)
 
 
 def cmd_restoreres(args) -> None:
@@ -1336,6 +1357,9 @@ def main() -> None:
 
     sr = sub.add_parser("setres", help="switch the monitor to the client resolution (Sunshine prep-cmd)")
     sr.set_defaults(func=cmd_setres)
+
+    sp = sub.add_parser("state-path", help="print the display-state file path (for scripts)")
+    sp.set_defaults(func=cmd_state_path)
 
     rr = sub.add_parser("restoreres", help="restore the original display mode (Sunshine undo)")
     rr.set_defaults(func=cmd_restoreres)

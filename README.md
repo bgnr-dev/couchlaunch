@@ -128,7 +128,7 @@ systemctl --user enable --now couchlaunch-display-guard.timer
 
 ## Configuration
 
-`~/.config/game-launcher/config.json` (all keys optional):
+`~/.config/couchlaunch/config.json` (all keys optional):
 
 ```json
 {
@@ -139,7 +139,7 @@ systemctl --user enable --now couchlaunch-display-guard.timer
 ```
 
 Environment overrides: `GAMECLI_GAMES_ROOT`, `GAMECLI_PREFIX_ROOT`.
-Per-game settings live in `~/.config/game-launcher/games/<slug>.json`.
+Per-game settings live in `~/.config/couchlaunch/games/<slug>.json`.
 
 | Key | Meaning |
 |---|---|
@@ -151,7 +151,7 @@ Per-game settings live in `~/.config/game-launcher/games/<slug>.json`.
 | `image` | absolute path to the Moonlight cover PNG |
 | `sunshine` | `false` hides the entry from Moonlight |
 
-Logs: `~/.cache/game-launcher/<slug>.log`.
+Logs: `~/.cache/couchlaunch/<slug>.log`.
 
 ---
 
@@ -219,8 +219,8 @@ restarted only when no stream is active (`sync --restart` forces it).
 | Symptom | Fix |
 |---|---|
 | Moonlight tile has no image | `couchlaunch icon <slug>` then check that `apps.json` holds an absolute path; the Sunshine log prints `Couldn't find app image at path [...]` when it cannot resolve one. |
-| Wrong exe launched | edit `path` in `~/.config/game-launcher/games/<slug>.json`, then `couchlaunch sync`. |
-| Game will not start | read `~/.cache/game-launcher/<slug>.log` (Proton output). |
+| Wrong exe launched | edit `path` in `~/.config/couchlaunch/games/<slug>.json`, then `couchlaunch sync`. |
+| Game will not start | read `~/.cache/couchlaunch/<slug>.log` (Proton output). |
 | Resolution stays at the stream size | `couchlaunch restoreres`, and enable the watchdog timer. |
 | Sunshine exits with `System tray is not initialized` | No StatusNotifier host (bar/panel not running). Either start the panel, or add `system_tray = disabled` to `sunshine.conf`. |
 | Sunshine stuck in `failed` after repeated restarts | `systemctl --user reset-failed app-dev.lizardbyte.app.Sunshine.service` (the tool already does this before restarting). |
@@ -234,8 +234,9 @@ bin/couchlaunch-display-guard        resolution watchdog (systemd timer)
 systemd/*.service,*.timer        watchdog units
 ```
 
-Registry/config stays in `~/.config/game-launcher/` for backwards compatibility with
-earlier private versions of this tool.
+Configuration lives in `~/.config/couchlaunch/` (registries) and `~/.cache/couchlaunch/`
+(logs, display state). A pre-rename `~/.config/game-launcher/` directory is migrated
+automatically on first run.
 
 ## License
 
