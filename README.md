@@ -208,8 +208,8 @@ restarted only when no stream is active (`sync --restart` forces it).
   relative `image-path` names inside its own assets directory, not next to `apps.json`.
   Tiles are 2:3, so `couchlaunch icon` normalises everything to 600×900 (crop for portrait
   sources, blurred backdrop for landscape ones).
-- On the client, a Super/Win key bound to a desktop shortcut (e.g. GNOME's
-  `overlay-key`) never reaches the host. Add non-conflicting duplicate bindings on the
+- On the client, a Super/Win key bound by the client's own compositor (a Hyprland
+  `SUPER + …` bind, GNOME's `overlay-key`, …) never reaches the host. Add non-conflicting duplicate bindings on the
   host (the author uses `ALT+Enter` for a terminal and `ALT+1..0` for workspaces).
 
 ## Troubleshooting
