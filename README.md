@@ -65,6 +65,10 @@ couchlaunch list                      # sanity check: slug, name, target
 Every `add`/`steam --add`/`install` regenerates the Sunshine app list, so the new game is
 already waiting in Moonlight by the time you put the laptop down.
 
+> **This part is one-time work.** You touch `couchlaunch` when a game is new to the machine:
+> register it once, and from then on it is just a tile in Moonlight. Day-to-day playing needs
+> **no script at all** — open Moonlight, click the game, done.
+
 ### 2. Lean back: play it from Moonlight
 
 1. Laptop: open Moonlight and pick the host (the gaming desktop).
@@ -72,16 +76,25 @@ already waiting in Moonlight by the time you put the laptop down.
 3. Click a tile → Sunshine runs `couchlaunch run <slug>` → the desktop's monitor switches
    to *your laptop's* resolution (e.g. 4K screen → 1080p60 stream) → the game starts
    fullscreen, at 1:1 pixels, no upscaling.
-4. Quit the game: the stream ends and the desktop switches back to its own mode. If the
-   game hangs, end it from the laptop with
-   `ssh you@gaming-desktop 'couchlaunch stop <slug>'` — that closes the window, kills the
-   process and restores the display mode.
+4. Quit the game the normal way (or `Ctrl+Alt+Shift+Q` in Moonlight to drop the stream):
+   the session ends and the desktop switches back to its own mode. `couchlaunch stop <slug>`
+   is only the cleanup path — for a game that hung, or for a session that died without
+   restoring the resolution.
 
 ### 3. If you sit at the desk instead
 
 Same registry, same entries: launch from the app menu (`couchlaunch desktop <slug>`) or
 `couchlaunch run <slug>` in a terminal. Local launches are left alone — they run natively
 on the desktop's own 4K display, no stream involved.
+
+### 4. It also works away from home
+
+The stream is just HEVC over UDP, so it does not care where the client is: on mobile data
+from a parked car, on a train, in a hotel. ~15 Mbps at 1080p60 fits typical 4G/5G, and
+Moonlight adapts the bitrate to the link. Reach the host through a VPN (WireGuard is the
+sane option — Sunshine should not be exposed to the internet directly), then play exactly
+like on the couch. The only difference: latency and bitrate are the mobile network's, not
+your WiFi's.
 
 ### Day-2 operations (all over SSH)
 
@@ -294,6 +307,24 @@ systemd/*.service,*.timer        watchdog units
 Configuration lives in `~/.config/couchlaunch/` (registries) and `~/.cache/couchlaunch/`
 (logs, display state). A pre-rename `~/.config/game-launcher/` directory is migrated
 automatically on first run.
+
+## Credits
+
+`couchlaunch` is the glue; the actual streaming and Windows-on-Linux work is done by
+other people's excellent projects:
+
+- **[Sunshine](https://github.com/LizardByte/Sunshine)** (LizardByte) — the self-hosted
+  game-stream host: capture, NVENC/VAAPI encoding, input injection, app list. Without it
+  there is nothing to launch.
+- **[Moonlight](https://github.com/moonlight-stream)** — the client on the other end:
+  decoding, bitrate adaptation, gamepad/keyboard handling, the app grid this tool feeds.
+- **[umu-launcher](https://github.com/Open-Wine-Components/umu-launcher)** — the reason a
+  Windows game can be started like a native binary, with Proton outside Steam.
+- **[Proton](https://github.com/ValveSoftware/Proton) / Wine** — the compatibility layer
+  doing the actual heavy lifting.
+- **[SteamGridDB](https://www.steamgriddb.com/)** — portrait box art for the Moonlight tiles.
+- **Hyprland** — the compositor whose output Sunshine captures and whose monitor this tool
+  switches.
 
 ## License
 
