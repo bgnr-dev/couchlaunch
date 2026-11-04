@@ -217,7 +217,7 @@ Optional: the resolution watchdog (restores the desktop mode if a stream dies
 without a clean shutdown):
 
 ```bash
-ln -sf ~/code/couchlaunch/bin/couchlaunch-display-guard ~/.local/bin/couchlaunch-display-guard
+ln -sf ~/code/couchlaunch/couchlaunch-display-guard ~/.local/bin/couchlaunch-display-guard
 cp ~/code/couchlaunch/systemd/couchlaunch-display-guard.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now couchlaunch-display-guard.timer
@@ -326,9 +326,10 @@ restarted only when no stream is active (`sync --restart` forces it).
 ## Layout
 
 ```
-couchlaunch                          the tool (single-file Python 3, stdlib only)
-bin/couchlaunch-display-guard        resolution watchdog (systemd timer)
+couchlaunch                      the tool (single-file Python 3, stdlib only)
+couchlaunch-display-guard        resolution watchdog (systemd timer)
 systemd/*.service,*.timer        watchdog units
+docs/moonlight-app-grid.webp     screenshot used in this README
 ```
 
 Configuration lives in `~/.config/couchlaunch/` (registries) and `~/.cache/couchlaunch/`
