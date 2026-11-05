@@ -1,17 +1,56 @@
 #!/bin/bash
 # Display guard: restores the desktop display mode when a stream ended without a
-# clean shutdown (no active stream, no game running, but a switched mode pending).
+# clean shutdown (no active stream, no game running, but a switched mode is pending).
+#
+# It must never fire during a live session. A session transition (client reconnect,
+# encoder restart) shows no sockets for a split second — an earlier version of this
+# script landed in exactly that window and switched a running stream back to 4K.
+# So: two independent signals (Sunshine sockets + NVENC sessions) and a re-check.
 set -uo pipefail
+
 TOOL="$HOME/.local/bin/couchlaunch"
 STAMP="$("$TOOL" state-path 2>/dev/null)"
 [ -n "$STAMP" ] && [ -f "$STAMP" ] || exit 0
 
-# active stream? (Sunshine control + video ports)
-if ss -Htn 2>/dev/null | grep -qE ':(47984|47989|48010)\b'; then exit 0; fi
-if ss -Hun 2>/dev/null | grep -qE ':(47998|47999|48000)\b'; then exit 0; fi
+SUN_LOG="${COUCHLAUNCH_SUNSHINE_LOG:-${XDG_CONFIG_HOME:-$HOME/.config}/sunshine/sunshine.log}"
 
-# a game still running? (couchlaunch prints "<running>/<total> game(s) running")
-if "$HOME/.local/bin/couchlaunch" running 2>/dev/null | grep -qE '^[1-9][0-9]*/[0-9]+ game'; then exit 0; fi
+stream_active() {
+    # Sunshine's sockets are useless as a signal here: the video sockets are bound at
+    # startup and the client's control channel closes a moment before the encoder does.
+    # The log is the source of truth.
+    [ -r "$SUN_LOG" ] || return 1
 
-"$HOME/.local/bin/couchlaunch" restoreres
-logger -t couchlaunch-display-guard "display mode restored (no stream/game active)"
+    local last
+    last=$(grep -E "Creating encoder|Session ended" "$SUN_LOG" 2>/dev/null | tail -1)
+    case "$last" in
+        *"Creating encoder"*)  # a session started and has not ended since
+            return 0 ;;
+        *"Session ended"*)
+            # ended — only idle if Sunshine has stopped writing frames
+            local age
+            age=$(( $(date +%s) - $(stat -c %Y "$SUN_LOG") ))
+            [ "$age" -lt 20 ] && return 0
+            return 1 ;;
+    esac
+
+    # no session events at all (fresh log): treat recent activity as a live stream
+    local age
+    age=$(( $(date +%s) - $(stat -c %Y "$SUN_LOG") ))
+    [ "$age" -lt 20 ] && return 0
+    return 1
+}
+
+game_running() {
+    "$TOOL" running 2>/dev/null | grep -qE '^[1-9][0-9]*/[0-9]+ game'
+}
+
+stream_active && exit 0
+game_running && exit 0
+
+# Session transitions are short-lived: take a second look before touching the display.
+sleep 10
+stream_active && exit 0
+game_running && exit 0
+
+"$TOOL" restoreres
+logger -t couchlaunch-display-guard "display mode restored (no stream/game after re-check)"
